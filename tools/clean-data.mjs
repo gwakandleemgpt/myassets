@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { catalogToMaps, readCatalog } from "./catalog-utils.mjs";
 
 const root = process.cwd();
 const inputFile = process.argv[2];
@@ -12,29 +13,8 @@ const inputPath = path.resolve(root, inputFile);
 const outputDir = path.resolve(root, "data");
 const holdingsPath = path.join(outputDir, "portfolio-clean.csv");
 const plansPath = path.join(outputDir, "portfolio-plans.csv");
-
-const explicitAssetTypeByTicker = new Map([
-  ["AMD3", "공격형 투자"],
-  ["AMDL", "공격형 투자"],
-  ["GGLL", "공격형 투자"],
-]);
-
-const fallbackAssetTypeByTicker = new Map([
-  ["ADBE", "일반 투자"],
-  ["AMD", "일반 투자"],
-  ["GOOGL", "일반 투자"],
-  ["IONQ", "미래기술 투자"],
-  ["KO", "배당주"],
-  ["META", "일반 투자"],
-  ["NPCE", "미래기술 투자"],
-  ["QQQ", "일반 투자"],
-  ["RGTI", "미래기술 투자"],
-  ["SCHD", "배당주"],
-  ["STKH", "미래기술 투자"],
-  ["인베니아", "일반 투자"],
-]);
-
-const bankLikeFirms = new Set(["카카오뱅크", "키움저축은행", "우리은행"]);
+const catalog = readCatalog(root);
+const catalogMaps = catalogToMaps(catalog);
 const outputColumns = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
 
 const sourceText = fs.readFileSync(inputPath, "utf8").replace(/^\uFEFF/, "");
@@ -86,11 +66,11 @@ console.log(`Wrote: ${path.relative(root, plansPath)}`);
 
 function normalizeAssetType(row, ticker, majorityMap, isBalanceCash) {
   if (isBalanceCash) {
-    return "예금";
+    return catalog.cashAssetType;
   }
 
-  if (explicitAssetTypeByTicker.has(ticker)) {
-    return explicitAssetTypeByTicker.get(ticker);
+  if (catalogMaps.tickerAssetTypeByTicker.has(ticker)) {
+    return catalogMaps.tickerAssetTypeByTicker.get(ticker);
   }
 
   const current = normalizeText(row["Asset Type"]);
@@ -102,16 +82,12 @@ function normalizeAssetType(row, ticker, majorityMap, isBalanceCash) {
     return majorityMap.get(ticker);
   }
 
-  if (fallbackAssetTypeByTicker.has(ticker)) {
-    return fallbackAssetTypeByTicker.get(ticker);
-  }
-
   const firm = normalizeText(row["Securities Firm"]);
-  if (!ticker && bankLikeFirms.has(firm)) {
-    return "예금";
+  if (!ticker && catalogMaps.bankLikeFirms.has(firm)) {
+    return catalog.cashAssetType;
   }
 
-  return "미분류";
+  return catalog.unclassifiedAssetType;
 }
 
 function inferMajorityAssetTypes(rows) {
@@ -142,7 +118,7 @@ function inferMajorityAssetTypes(rows) {
 }
 
 function collectKnownTickers(rows) {
-  const tickers = new Set([...explicitAssetTypeByTicker.keys(), ...fallbackAssetTypeByTicker.keys()]);
+  const tickers = new Set(catalogMaps.tickerAssetTypeByTicker.keys());
 
   for (const row of rows) {
     const ticker = normalizeTicker(row.Ticker);
@@ -229,7 +205,8 @@ function normalizeText(value) {
 }
 
 function isBalanceName(value) {
-  return normalizeText(value).startsWith("잔고");
+  const text = normalizeText(value);
+  return text.startsWith(catalog.balanceNamePrefix) || catalog.cashLabels.some((label) => text.includes(label));
 }
 
 function compareRows(a, b) {

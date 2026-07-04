@@ -4,11 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Asset Monitor</title>
-    <link rel="stylesheet" href="assets/styles.css?v=20260704i" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260704p" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="assets/app.js?v=20260704i" defer></script>
+    <script src="assets/app.js?v=20260704p" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -34,40 +34,34 @@
       <main>
         <section id="dashboard" class="tab-panel is-active">
           <div class="control-band">
-            <label class="field field-date" for="dateSelect">
-              <span>View date</span>
-              <select id="dateSelect"></select>
-            </label>
-            <input id="dateSlider" class="date-slider" type="range" min="0" value="0" />
-            <div class="button-row">
-              <button id="resetDataBtn" class="icon-button" type="button" title="Reload source CSV">
-                <i data-lucide="refresh-ccw"></i>
-              </button>
-              <button id="exportHoldingsBtn" class="text-button" type="button">
-                <i data-lucide="download"></i>
-                <span>Export data</span>
-              </button>
+            <section class="metric-strip" aria-label="Portfolio summary">
+              <div class="metric">
+                <span>Total volume</span>
+                <strong id="metricTotal">-</strong>
+              </div>
+              <div class="metric">
+                <span>Investment volume</span>
+                <strong id="metricInvestment">-</strong>
+              </div>
+            </section>
+
+            <div class="timeline-control">
+              <label class="field field-date" for="dateSelect">
+                <span>View date</span>
+                <select id="dateSelect"></select>
+              </label>
+              <input id="dateSlider" class="date-slider" type="range" min="0" value="0" />
+              <div class="button-row">
+                <button id="resetDataBtn" class="icon-button" type="button" title="Reload source CSV">
+                  <i data-lucide="refresh-ccw"></i>
+                </button>
+                <button id="exportHoldingsBtn" class="text-button" type="button">
+                  <i data-lucide="download"></i>
+                  <span>Export data</span>
+                </button>
+              </div>
             </div>
           </div>
-
-          <section class="metric-strip" aria-label="Portfolio summary">
-            <div class="metric">
-              <span>Total volume</span>
-              <strong id="metricTotal">-</strong>
-            </div>
-            <div class="metric">
-              <span>Investment volume</span>
-              <strong id="metricInvestment">-</strong>
-            </div>
-            <div class="metric">
-              <span>Tickers</span>
-              <strong id="metricTickers">-</strong>
-            </div>
-            <div class="metric">
-              <span>Latest source date</span>
-              <strong id="metricLatest">-</strong>
-            </div>
-          </section>
 
           <section class="chart-grid" aria-label="Portfolio charts">
             <article class="chart-panel pie-panel">
@@ -78,6 +72,16 @@
               <div class="pie-frame">
                 <canvas id="assetDistributionChart"></canvas>
                 <div id="assetDistributionCenter" class="donut-center"></div>
+              </div>
+            </article>
+
+            <article class="chart-panel line-panel">
+              <header class="panel-header">
+                <h2>Asset Trend</h2>
+                <span>Monthly chunks</span>
+              </header>
+              <div class="line-frame">
+                <canvas id="assetTrendChart"></canvas>
               </div>
             </article>
 
@@ -92,24 +96,13 @@
               </div>
             </article>
 
-            <article class="chart-panel pie-panel">
-              <header class="panel-header">
-                <h2>Securities Firm</h2>
-                <span id="firmMeta"></span>
-              </header>
-              <div class="pie-frame">
-                <canvas id="firmChart"></canvas>
-                <div id="firmCenter" class="donut-center"></div>
-              </div>
-            </article>
-
             <article class="chart-panel line-panel">
               <header class="panel-header">
-                <h2>Asset Trend</h2>
-                <span>Monthly chunks</span>
+                <h2>Value Trend</h2>
+                <span>Individual tickers</span>
               </header>
               <div class="line-frame">
-                <canvas id="assetTrendChart"></canvas>
+                <canvas id="valueTrendChart"></canvas>
               </div>
             </article>
 
@@ -123,13 +116,14 @@
               </div>
             </article>
 
-            <article class="chart-panel line-panel wide">
+            <article class="chart-panel pie-panel">
               <header class="panel-header">
-                <h2>Value Trend</h2>
-                <span>Individual tickers</span>
+                <h2>Securities Firm</h2>
+                <span id="firmMeta"></span>
               </header>
-              <div class="line-frame tall">
-                <canvas id="valueTrendChart"></canvas>
+              <div class="pie-frame">
+                <canvas id="firmChart"></canvas>
+                <div id="firmCenter" class="donut-center"></div>
               </div>
             </article>
           </section>
@@ -139,15 +133,11 @@
           <div class="workspace-grid">
             <section class="workspace-panel">
               <div class="panel-header">
-                <h2>Plan Entry</h2>
-                <span id="planStatus">Historical plans loaded</span>
+                <h2>Plan Editor</h2>
+                <span id="planStatus">Based on latest snapshot</span>
               </div>
 
               <form id="planForm" class="plan-form">
-                <label class="field" for="planDate">
-                  <span>Date</span>
-                  <input id="planDate" type="date" required />
-                </label>
                 <label class="field" for="planTicker">
                   <span>Ticker</span>
                   <input id="planTicker" type="text" autocomplete="off" />
@@ -162,23 +152,18 @@
                 </label>
                 <button class="text-button primary" type="submit">
                   <i data-lucide="plus"></i>
-                  <span>Add plan</span>
+                  <span>Add row</span>
                 </button>
               </form>
-
-              <div class="segmented" role="group" aria-label="Plan chart mode">
-                <button class="is-active" type="button" data-plan-mode="plans">Plan only</button>
-                <button type="button" data-plan-mode="combined">Current + plan</button>
-              </div>
 
               <div class="action-row">
                 <button id="exportPlansBtn" class="text-button" type="button">
                   <i data-lucide="download"></i>
-                  <span>Export plans</span>
+                  <span>Export plan</span>
                 </button>
-                <button id="clearPlansBtn" class="text-button danger" type="button">
-                  <i data-lucide="trash-2"></i>
-                  <span>Clear plans</span>
+                <button id="resetPlansBtn" class="text-button" type="button">
+                  <i data-lucide="rotate-ccw"></i>
+                  <span>Reset latest</span>
                 </button>
               </div>
             </section>
@@ -196,14 +181,13 @@
 
             <section class="workspace-panel wide-workspace">
               <div class="panel-header">
-                <h2>Plan History</h2>
+                <h2>Working Plan</h2>
                 <span id="planTableMeta">-</span>
               </div>
               <div class="table-frame plan-table">
                 <table>
                   <thead>
                     <tr>
-                      <th>Date</th>
                       <th>Asset Type</th>
                       <th>Ticker</th>
                       <th class="number-cell">Volume</th>

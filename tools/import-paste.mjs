@@ -3,17 +3,20 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { catalogToMaps, readCatalog } from "./catalog-utils.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const dataDir = path.join(repoRoot, "data");
 const holdingsPath = path.join(dataDir, "portfolio-clean.csv");
 const plansPath = path.join(dataDir, "portfolio-plans.csv");
+const catalog = readCatalog(repoRoot);
+const catalogMaps = catalogToMaps(catalog);
 
 const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
-const CASH_ASSET_TYPE = "예금";
-const UNCLASSIFIED_ASSET_TYPE = "미분류";
-const BALANCE_PREFIX = "잔고";
+const CASH_ASSET_TYPE = catalog.cashAssetType;
+const UNCLASSIFIED_ASSET_TYPE = catalog.unclassifiedAssetType;
+const BALANCE_PREFIX = catalog.balanceNamePrefix;
 
 main().catch((error) => {
   console.error(`Import failed: ${error.message}`);
@@ -266,7 +269,7 @@ function normalizeStoredRows(rows) {
 
 function buildNormalizationContext(existingRows, rawInputRows) {
   return {
-    assetTypeByTicker: inferMajorityAssetTypes(existingRows),
+    majorityAssetTypeByTicker: inferMajorityAssetTypes(existingRows),
     knownTickers: collectKnownTickers(existingRows, rawInputRows),
   };
 }
@@ -293,7 +296,7 @@ function normalizeIncomingRows(rawRows, options, context) {
         : normalizeTicker(getField(row, ["Ticker", "Symbol"])) || inferTicker(name, context.knownTickers);
       const normalized = {
         Date: parseDate(getField(row, ["Date", "Snapshot Date"]) || options.date),
-        "Asset Type": normalizeAssetType(row, ticker, context.assetTypeByTicker, isBalanceCash),
+        "Asset Type": normalizeAssetType(row, ticker, context.majorityAssetTypeByTicker, isBalanceCash),
         "Securities Firm": normalizeText(getField(row, ["Securities Firm", "Firm", "Broker"])),
         Ticker: ticker,
         Volume: String(volume),
@@ -315,9 +318,13 @@ function normalizeIncomingRows(rawRows, options, context) {
   };
 }
 
-function normalizeAssetType(row, ticker, assetTypeByTicker, isBalanceCash) {
+function normalizeAssetType(row, ticker, majorityAssetTypeByTicker, isBalanceCash) {
   if (isBalanceCash) {
     return CASH_ASSET_TYPE;
+  }
+
+  if (ticker && catalogMaps.tickerAssetTypeByTicker.has(ticker)) {
+    return catalogMaps.tickerAssetTypeByTicker.get(ticker);
   }
 
   const current = normalizeText(getField(row, ["Asset Type", "AssetType", "Type", "Category"]));
@@ -325,8 +332,8 @@ function normalizeAssetType(row, ticker, assetTypeByTicker, isBalanceCash) {
     return current;
   }
 
-  if (ticker && assetTypeByTicker.has(ticker)) {
-    return assetTypeByTicker.get(ticker);
+  if (ticker && majorityAssetTypeByTicker.has(ticker)) {
+    return majorityAssetTypeByTicker.get(ticker);
   }
 
   return UNCLASSIFIED_ASSET_TYPE;
@@ -358,7 +365,7 @@ function inferMajorityAssetTypes(rows) {
 }
 
 function collectKnownTickers(existingRows, rawInputRows) {
-  const tickers = new Set();
+  const tickers = new Set(catalogMaps.tickerAssetTypeByTicker.keys());
   for (const row of existingRows) {
     const ticker = normalizeTicker(row.Ticker);
     if (ticker) {
@@ -560,12 +567,15 @@ function formatClipboardFailure(command, result) {
 function buildSystemPrompt() {
   const holdings = normalizeStoredRows(readCsvFile(holdingsPath));
   const rows = [...holdings, ...normalizeStoredRows(readCsvFile(plansPath))];
-  const assetTypes = sortedUnique([...rows.map((row) => row["Asset Type"]), CASH_ASSET_TYPE, UNCLASSIFIED_ASSET_TYPE]);
-  const firms = sortedUnique(rows.map((row) => row["Securities Firm"]));
+  const assetTypes = sortedUnique([...catalog.assetTypes, ...rows.map((row) => row["Asset Type"]), CASH_ASSET_TYPE, UNCLASSIFIED_ASSET_TYPE]);
+  const firms = sortedUnique([...Object.keys(catalog.colors.firm), ...catalog.bankLikeFirms, ...rows.map((row) => row["Securities Firm"])]);
   const tickerGroups = groupTickersByAssetType(holdings);
   const tickerLines = tickerGroups.length
     ? tickerGroups.map(([assetType, tickers]) => `- ${assetType}: ${tickers.join(", ")}`).join("\n")
     : "- No known tickers yet.";
+  const bankRules = catalog.bankLikeFirms.map((firm) => `- ${firm} rows are always Asset Type = ${CASH_ASSET_TYPE} and Ticker empty.`);
+  const cashLabelRules = catalog.cashLabels.map((label) => `- ${label} rows are always Asset Type = ${CASH_ASSET_TYPE} and Ticker empty.`);
+  const cashRules = [...bankRules, ...cashLabelRules].join("\n");
 
   return `You are a strict portfolio screenshot data extraction engine.
 
@@ -597,10 +607,8 @@ ${tickerLines}
 Known securities firms/banks:
 ${firms.map((firm) => `- ${firm}`).join("\n")}
 
-예금 classification rules:
-- 키움저축은행 rows are always Asset Type = 예금 and Ticker empty.
-- 우리은행 rows are always Asset Type = 예금 and Ticker empty.
-- 예수금 rows are always Asset Type = 예금 and Ticker empty.
+${CASH_ASSET_TYPE} classification rules:
+${cashRules || `- Cash/deposit rows are always Asset Type = ${CASH_ASSET_TYPE} and Ticker empty.`}
 
 Ticker rules:
 - Use uppercase ticker symbols.
@@ -622,6 +630,13 @@ Output format:
 
 function groupTickersByAssetType(rows) {
   const groups = new Map();
+  for (const [ticker, assetType] of catalogMaps.tickerAssetTypeByTicker.entries()) {
+    if (!groups.has(assetType)) {
+      groups.set(assetType, new Set());
+    }
+    groups.get(assetType).add(ticker);
+  }
+
   for (const row of rows) {
     const ticker = normalizeTicker(row.Ticker);
     const assetType = normalizeText(row["Asset Type"]);
@@ -710,7 +725,8 @@ function normalizeText(value) {
 }
 
 function isBalanceName(value) {
-  return normalizeText(value).startsWith(BALANCE_PREFIX);
+  const text = normalizeText(value);
+  return text.startsWith(BALANCE_PREFIX) || catalog.cashLabels.some((label) => text.includes(label));
 }
 
 function compareRows(a, b) {

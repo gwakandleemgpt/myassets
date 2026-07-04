@@ -163,8 +163,7 @@ h2 {
 
 .tab-button,
 .text-button,
-.icon-button,
-.segmented button {
+.icon-button {
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--ink);
@@ -193,8 +192,7 @@ h2 {
   color: var(--muted);
 }
 
-.tab-button.is-active,
-.segmented button.is-active {
+.tab-button.is-active {
   background: var(--ink);
   border-color: var(--ink);
   color: var(--bg);
@@ -232,8 +230,7 @@ button:hover {
   transform: translateY(-1px);
 }
 
-.tab-button.is-active:hover,
-.segmented button.is-active:hover {
+.tab-button.is-active:hover {
   background: var(--ink);
   border-color: var(--ink);
 }
@@ -270,7 +267,6 @@ svg {
 }
 
 .control-band,
-.metric-strip,
 .chart-panel,
 .workspace-panel {
   background: rgba(27, 30, 38, 0.94);
@@ -281,8 +277,8 @@ svg {
 
 .control-band {
   display: grid;
-  grid-template-columns: minmax(190px, 260px) minmax(220px, 1fr) auto;
-  align-items: end;
+  grid-template-columns: minmax(230px, 310px) minmax(0, 1fr);
+  align-items: stretch;
   gap: 18px;
   padding: 16px;
   margin-bottom: 16px;
@@ -366,16 +362,20 @@ svg {
 
 .metric-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
+  grid-template-columns: 1fr;
+  align-content: stretch;
+  gap: 1px;
+  min-width: 0;
   overflow: hidden;
-  margin-bottom: 16px;
-  background: rgba(27, 30, 38, 0.94);
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-control);
 }
 
 .metric {
   min-width: 0;
-  padding: 17px 16px 16px;
+  padding: 13px 14px 12px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0)),
     var(--surface-soft);
@@ -389,12 +389,37 @@ svg {
 }
 
 .metric strong {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   margin-top: 7px;
   color: var(--ink-strong);
   font-size: 1.28rem;
   letter-spacing: 0;
   overflow-wrap: anywhere;
+}
+
+.metric-percent {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 400;
+}
+
+.timeline-control {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  gap: 12px 16px;
+  align-content: center;
+  align-items: end;
+}
+
+.timeline-control .date-slider {
+  align-self: end;
+}
+
+.timeline-control .button-row {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
 }
 
 .chart-grid {
@@ -416,12 +441,8 @@ svg {
 }
 
 .line-panel {
-  grid-column: span 6;
+  grid-column: span 8;
   min-height: 430px;
-}
-
-.line-panel.wide {
-  grid-column: span 12;
 }
 
 .panel-header {
@@ -570,6 +591,25 @@ tr:last-child td {
   text-align: right;
 }
 
+.volume-edit {
+  width: 140px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-control);
+  color: var(--ink-strong);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.volume-edit:focus {
+  border-color: rgba(143, 183, 255, 0.64);
+  outline: none;
+}
+
 .plan-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -578,24 +618,6 @@ tr:last-child td {
 
 .plan-form button {
   grid-column: span 2;
-}
-
-.segmented {
-  display: inline-grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  margin: 16px 0 4px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-soft);
-}
-
-.segmented button {
-  min-height: 36px;
-  padding: 0 12px;
-  font-weight: 800;
-  color: var(--muted);
 }
 
 .plan-pie {
@@ -635,8 +657,7 @@ tr:last-child td {
   }
 
   .pie-panel,
-  .line-panel,
-  .line-panel.wide {
+  .line-panel {
     grid-column: span 12;
   }
 
@@ -655,12 +676,12 @@ tr:last-child td {
     font-size: 1.86rem;
   }
 
-  .metric-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .chart-grid {
     gap: 12px;
+  }
+
+  .timeline-control {
+    grid-template-columns: 1fr;
   }
 
   .pie-frame,

@@ -1,75 +1,15 @@
 const SOURCE_HOLDINGS = "data/portfolio-clean.csv";
-const SOURCE_PLANS = "data/portfolio-plans.csv";
+const SOURCE_CATALOG = "data/catalog.json";
 
 const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
-const ASSET_TYPES = ["공격형 투자", "일반 투자", "미래기술 투자", "배당주", "예금", "비상금", "소비", "미분류"];
-
-const EXPLICIT_ASSET_TYPE_BY_TICKER = new Map([
-  ["AMD3", "공격형 투자"],
-  ["AMDL", "공격형 투자"],
-  ["GGLL", "공격형 투자"],
-]);
-
-const FALLBACK_ASSET_TYPE_BY_TICKER = new Map([
-  ["ADBE", "일반 투자"],
-  ["AMD", "일반 투자"],
-  ["GOOGL", "일반 투자"],
-  ["IONQ", "미래기술 투자"],
-  ["KO", "배당주"],
-  ["META", "일반 투자"],
-  ["NPCE", "미래기술 투자"],
-  ["QQQ", "일반 투자"],
-  ["RGTI", "미래기술 투자"],
-  ["SCHD", "배당주"],
-  ["STKH", "미래기술 투자"],
-  ["인베니아", "일반 투자"],
-]);
-
-const BANK_LIKE_FIRMS = new Set(["카카오뱅크", "키움저축은행", "우리은행"]);
-
-const COLOR_MAPS = {
-  asset: new Map([
-    ["일반 투자", "#f3a8cf"],
-    ["공격형 투자", "#f89a9a"],
-    ["공격적 투자", "#f89a9a"],
-    ["배당주", "#8fdda0"],
-    ["예금", "#f4d66d"],
-    ["미래기술 투자", "#e8edf2"],
-    ["비상금", "#c7b8ff"],
-    ["소비", "#f5a3b7"],
-    ["미분류", "#a8b3bf"],
-  ]),
-  ticker: new Map([
-    ["AMD", "#eef3f8"],
-    ["AMDL", "#d4dbe3"],
-    ["AMD3", "#9aa3ae"],
-    ["GOOGL", "#8edb99"],
-    ["GGLL", "#6fad78"],
-    ["ADBE", "#f39a9a"],
-    ["KO", "#ef858c"],
-    ["IONQ", "#c99a76"],
-    ["NPCE", "#b9edc4"],
-    ["QQQ", "#8fb7ff"],
-    ["RGTI", "#9eddf2"],
-    ["SCHD", "#d9be8f"],
-    ["STKH", "#626b76"],
-    ["인베니아", "#f5a363"],
-    ["META", "#a8a3ff"],
-  ]),
-  firm: new Map([
-    ["나무증권", "#9ce2a1"],
-    ["키움증권", "#bea7ff"],
-    ["삼성증권", "#9eddf2"],
-    ["키움저축은행", "#f4a9d4"],
-    ["우리은행", "#8fb7ff"],
-    ["KB증권", "#e8cc63"],
-    ["카카오뱅크", "#ffe07a"],
-    ["대신증권", "#f5a363"],
-    ["미분류", "#a8b3bf"],
-  ]),
-};
-
-const FALLBACK_COLORS = [
+let ASSET_TYPES = [];
+let TICKER_ASSET_TYPE_BY_TICKER = new Map();
+let BANK_LIKE_FIRMS = new Set();
+let COLOR_MAPS = { asset: new Map(), ticker: new Map(), firm: new Map() };
+let CASH_ASSET_TYPE = "예금";
+let UNCLASSIFIED_ASSET_TYPE = "미분류";
+let BALANCE_PREFIX = "잔고";
+let FALLBACK_COLORS = [
   "#f89a9a",
   "#8fdda0",
   "#f4d66d",
@@ -84,18 +24,21 @@ const FALLBACK_COLORS = [
 
 const KRW_PER_MAN = 10000;
 const MAN_PER_EOK = 10000;
+const DOUGHNUT_SCALE_ANIMATION_DURATION = 420;
+const DOUGHNUT_ROTATE_ANIMATION_DURATION = 520;
+const LINE_POINT_ANIMATION_DURATION = 620;
+const LINE_POINT_STAGGER_MS = 45;
+const LINE_POINT_MAX_DELAY_MS = 720;
 const unitNumberFormatter = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 0,
 });
 
 const state = {
   baseHoldings: [],
-  basePlans: [],
   holdings: [],
   plans: [],
   dates: [],
   viewDate: "",
-  planMode: "plans",
   charts: {},
 };
 
@@ -106,8 +49,6 @@ async function init() {
   wireTabs();
   wireDashboardControls();
   wirePlanControls();
-  populatePlanAssetTypes();
-  setDefaultPlanDate();
   await loadInitialData();
   renderIcons();
 }
@@ -116,11 +57,14 @@ async function loadInitialData() {
   setStatus("Loading source CSV...");
 
   try {
-    const [holdingsText, plansText] = await Promise.all([fetchText(SOURCE_HOLDINGS), fetchText(SOURCE_PLANS)]);
+    const [catalogText, holdingsText] = await Promise.all([
+      fetchText(SOURCE_CATALOG),
+      fetchText(SOURCE_HOLDINGS),
+    ]);
+    applyCatalog(JSON.parse(catalogText));
+    populatePlanAssetTypes();
     state.baseHoldings = normalizeCsvText(holdingsText, { defaultPlan: "No" }).holdings;
-    state.basePlans = normalizeCsvText(plansText, { defaultPlan: "Yes" }).plans;
     state.holdings = [...state.baseHoldings];
-    state.plans = [...state.basePlans];
 
     refreshDataViews({ resetViewDate: true });
   } catch (error) {
@@ -136,6 +80,72 @@ async function fetchText(url) {
   return response.text();
 }
 
+function applyCatalog(rawCatalog) {
+  const catalog = normalizeCatalog(rawCatalog);
+  ASSET_TYPES = catalog.assetTypes;
+  TICKER_ASSET_TYPE_BY_TICKER = objectToMap(catalog.tickerAssetTypes, normalizeTicker, normalizeText);
+  BANK_LIKE_FIRMS = new Set(catalog.bankLikeFirms);
+  COLOR_MAPS = {
+    asset: objectToMap(catalog.colors.asset, normalizeText, normalizeText),
+    ticker: objectToMap(catalog.colors.ticker, normalizeTicker, normalizeText),
+    firm: objectToMap(catalog.colors.firm, normalizeText, normalizeText),
+  };
+  FALLBACK_COLORS = catalog.colors.fallback;
+  CASH_ASSET_TYPE = catalog.cashAssetType;
+  UNCLASSIFIED_ASSET_TYPE = catalog.unclassifiedAssetType;
+  BALANCE_PREFIX = catalog.balanceNamePrefix;
+}
+
+function normalizeCatalog(rawCatalog) {
+  const raw = rawCatalog && typeof rawCatalog === "object" ? rawCatalog : {};
+  const colors = raw.colors && typeof raw.colors === "object" ? raw.colors : {};
+  const cashAssetType = normalizeText(raw.cashAssetType) || CASH_ASSET_TYPE;
+  const unclassifiedAssetType = normalizeText(raw.unclassifiedAssetType) || UNCLASSIFIED_ASSET_TYPE;
+  const fallbackColors = uniqueTextList(colors.fallback || FALLBACK_COLORS);
+  return {
+    assetTypes: uniqueTextList([...(Array.isArray(raw.assetTypes) ? raw.assetTypes : []), cashAssetType, unclassifiedAssetType]),
+    cashAssetType,
+    unclassifiedAssetType,
+    balanceNamePrefix: normalizeText(raw.balanceNamePrefix) || BALANCE_PREFIX,
+    bankLikeFirms: uniqueTextList(raw.bankLikeFirms || []),
+    tickerAssetTypes: raw.tickerAssetTypes || {},
+    colors: {
+      asset: colors.asset || {},
+      ticker: colors.ticker || {},
+      firm: colors.firm || {},
+      fallback: fallbackColors.length ? fallbackColors : FALLBACK_COLORS,
+    },
+  };
+}
+
+function objectToMap(record, keyFn, valueFn) {
+  const map = new Map();
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return map;
+  }
+  Object.entries(record).forEach(([rawKey, rawValue]) => {
+    const key = keyFn(rawKey);
+    const value = valueFn(rawValue);
+    if (key && value) {
+      map.set(key, value);
+    }
+  });
+  return map;
+}
+
+function uniqueTextList(values) {
+  const result = [];
+  const seen = new Set();
+  values.forEach((value) => {
+    const normalized = normalizeText(value);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  });
+  return result;
+}
+
 function wireTabs() {
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
@@ -148,7 +158,13 @@ function wireTabs() {
       document.querySelectorAll(".tab-panel").forEach((panel) => {
         panel.classList.toggle("is-active", panel.id === tabId);
       });
-      Object.values(state.charts).forEach((chart) => chart.resize());
+      afterNextPaint(() => {
+        if (tabId === "dashboard") {
+          renderDashboard({ updateLines: true, doughnutAnimation: "scale" });
+        } else if (tabId === "plans") {
+          renderPlanWorkspace({ doughnutAnimation: "scale" });
+        }
+      });
     });
   });
 }
@@ -157,15 +173,13 @@ function wireDashboardControls() {
   byId("dateSelect").addEventListener("change", (event) => {
     state.viewDate = event.target.value;
     syncDateControls();
-    renderDashboard({ updateLines: false });
-    renderPlanWorkspace();
+    renderDashboard({ updateLines: false, doughnutAnimation: "rotate" });
   });
 
   byId("dateSlider").addEventListener("input", (event) => {
     state.viewDate = state.dates[Number(event.target.value)] || state.viewDate;
     syncDateControls();
-    renderDashboard({ updateLines: false });
-    renderPlanWorkspace();
+    renderDashboard({ updateLines: false, doughnutAnimation: "rotate" });
   });
 
   byId("resetDataBtn").addEventListener("click", async () => {
@@ -181,43 +195,32 @@ function wirePlanControls() {
   byId("planForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const plan = {
-      Date: byId("planDate").value,
+      Date: latestDataDate(),
       "Asset Type": byId("planAssetType").value,
       "Securities Firm": "",
       Ticker: normalizeTicker(byId("planTicker").value),
       Volume: String(Math.round(Number(byId("planVolume").value || 0))),
     };
 
-    if (!plan.Date || Number(plan.Volume) <= 0) {
-      setPlanStatus("Add a date and volume");
+    if (Number(plan.Volume) <= 0) {
+      setPlanStatus("Add a volume");
       return;
     }
 
-    state.plans = [...state.plans, plan].sort(compareRows);
+    state.plans = aggregatePlanRows([...state.plans, plan]).sort(compareRows);
     byId("planTicker").value = "";
     byId("planVolume").value = "";
     renderPlanWorkspace();
-    setPlanStatus("Plan added");
-  });
-
-  document.querySelectorAll("[data-plan-mode]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.planMode = button.dataset.planMode;
-      document.querySelectorAll("[data-plan-mode]").forEach((item) => {
-        item.classList.toggle("is-active", item === button);
-      });
-      renderPlanWorkspace();
-    });
+    setPlanStatus("Row added");
   });
 
   byId("exportPlansBtn").addEventListener("click", () => {
-    downloadCsv("portfolio-plans.csv", state.plans);
+    downloadCsv("future-plan.csv", state.plans);
   });
 
-  byId("clearPlansBtn").addEventListener("click", () => {
-    state.plans = [];
+  byId("resetPlansBtn").addEventListener("click", () => {
+    resetPlansToLatestSnapshot();
     renderPlanWorkspace();
-    setPlanStatus("Plans cleared");
   });
 }
 
@@ -225,24 +228,68 @@ function populatePlanAssetTypes() {
   byId("planAssetType").innerHTML = ASSET_TYPES.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("");
 }
 
-function setDefaultPlanDate() {
-  byId("planDate").value = new Date().toISOString().slice(0, 10);
+function resetPlansToLatestSnapshot() {
+  const latestDate = latestDataDate();
+  state.plans = aggregatePlanRows(state.holdings.filter((row) => row.Date === latestDate).map(planRowFromHolding)).sort(compareRows);
+  setPlanStatus(latestDate ? `Started from ${formatDateLabel(latestDate)}` : "No source data");
+}
+
+function planRowFromHolding(row) {
+  return {
+    Date: row.Date,
+    "Asset Type": row["Asset Type"],
+    "Securities Firm": "",
+    Ticker: row.Ticker,
+    Volume: row.Volume,
+  };
+}
+
+function aggregatePlanRows(rows) {
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const key = [row.Date, row["Asset Type"], row.Ticker].join("\u001F");
+    if (!grouped.has(key)) {
+      grouped.set(key, { ...row, "Securities Firm": "", Volume: "0" });
+    }
+    const current = grouped.get(key);
+    current.Volume = String(Number(current.Volume || 0) + Number(row.Volume || 0));
+  });
+  return [...grouped.values()];
+}
+
+function latestDataDate() {
+  return state.dates[state.dates.length - 1] || "";
 }
 
 function refreshDataViews({ resetViewDate = false } = {}) {
   state.holdings.sort(compareRows);
-  state.plans.sort(compareRows);
   state.dates = unique(state.holdings.map((row) => row.Date)).sort();
 
   if (resetViewDate || !state.dates.includes(state.viewDate)) {
     state.viewDate = state.dates[state.dates.length - 1] || "";
   }
 
+  if (resetViewDate) {
+    resetPlansToLatestSnapshot();
+  }
+
   syncDateControls();
   renderDashboard();
-  renderPlanWorkspace();
+  if (activeTabId() === "plans") {
+    renderPlanWorkspace();
+  }
   setStatus(statusText());
   renderIcons();
+}
+
+function activeTabId() {
+  return document.querySelector(".tab-panel.is-active")?.id || "dashboard";
+}
+
+function afterNextPaint(callback) {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(callback);
+  });
 }
 
 function syncDateControls() {
@@ -256,17 +303,15 @@ function syncDateControls() {
   slider.disabled = state.dates.length <= 1;
 }
 
-function renderDashboard({ updateLines = true } = {}) {
+function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {}) {
   const rows = rowsAtViewDate();
   const tickerRows = rows.filter((row) => row.Ticker);
   const total = sumRows(rows);
   const investmentTotal = sumRows(tickerRows);
-  const tickerCount = unique(tickerRows.map((row) => row.Ticker)).length;
+  const investmentPercent = total ? Math.round((investmentTotal / total) * 100) : 0;
 
   byId("metricTotal").textContent = formatCurrency(total);
-  byId("metricInvestment").textContent = formatCurrency(investmentTotal);
-  byId("metricTickers").textContent = String(tickerCount);
-  byId("metricLatest").textContent = state.dates.length ? formatDateLabel(state.dates[state.dates.length - 1]) : "-";
+  byId("metricInvestment").innerHTML = `${formatCurrency(investmentTotal)} <span class="metric-percent">(${investmentPercent}%)</span>`;
 
   renderDoughnut({
     chartId: "assetDistributionChart",
@@ -275,6 +320,7 @@ function renderDashboard({ updateLines = true } = {}) {
     rows,
     key: "Asset Type",
     colorKind: "asset",
+    animationMode: doughnutAnimation,
   });
 
   renderDoughnut({
@@ -284,6 +330,7 @@ function renderDashboard({ updateLines = true } = {}) {
     rows: tickerRows,
     key: "Ticker",
     colorKind: "ticker",
+    animationMode: doughnutAnimation,
   });
 
   renderDoughnut({
@@ -293,6 +340,7 @@ function renderDashboard({ updateLines = true } = {}) {
     rows,
     key: "Securities Firm",
     colorKind: "firm",
+    animationMode: doughnutAnimation,
   });
 
   if (updateLines) {
@@ -300,7 +348,7 @@ function renderDashboard({ updateLines = true } = {}) {
   }
 }
 
-function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind }) {
+function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind, animationMode = "scale" }) {
   const grouped = groupSum(rows, key);
   const entries = [...grouped.entries()].sort((a, b) => b[1] - a[1]);
   const labels = entries.map(([label]) => label);
@@ -324,7 +372,7 @@ function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind }) {
         },
       ],
     },
-    options: doughnutOptions(total),
+    options: doughnutOptions(total, animationMode),
   });
 }
 
@@ -337,8 +385,11 @@ function renderLineCharts() {
   const allPoints = pointsFromRows(state.holdings);
   const investmentPoints = pointsFromRows(state.holdings.filter((row) => row.Ticker));
 
-  replaceChart("assetTrendChart", lineChartConfig(timeline, [buildLineDataset("Total assets", allPoints, "#c7b8ff")]));
-  replaceChart("investmentTrendChart", lineChartConfig(timeline, [buildLineDataset("Ticker holdings", investmentPoints, "#8fdda0")]));
+  replaceChart("assetTrendChart", lineChartConfig(timeline, [buildLineDataset("Total assets", allPoints, "#c7b8ff")], { showLegend: false }));
+  replaceChart(
+    "investmentTrendChart",
+    lineChartConfig(timeline, [buildLineDataset("Ticker holdings", investmentPoints, "#8fdda0")], { showLegend: false }),
+  );
 
   const tickerGroups = groupRows(state.holdings.filter((row) => row.Ticker), "Ticker");
   const tickerDatasets = [...tickerGroups.entries()]
@@ -351,13 +402,19 @@ function renderLineCharts() {
   replaceChart("valueTrendChart", lineChartConfig(timeline, tickerDatasets, { legendClickMode: "hideThenIsolate" }));
 }
 
-function lineChartConfig(timeline, datasets, { legendClickMode = "default" } = {}) {
-  const legendOptions = {
-    position: "bottom",
-    labels: { boxWidth: 10, boxHeight: 10, color: "#d5dce7", usePointStyle: true },
-  };
+function lineChartConfig(timeline, datasets, { legendClickMode = "default", showLegend = true } = {}) {
+  const legendOptions = showLegend
+    ? {
+        position: "bottom",
+        labels: { boxWidth: 10, boxHeight: 10, color: "#d5dce7", usePointStyle: true },
+      }
+    : {
+        display: false,
+        onClick: null,
+        labels: { generateLabels: () => [] },
+      };
 
-  if (legendClickMode === "hideThenIsolate") {
+  if (showLegend && legendClickMode === "hideThenIsolate") {
     legendOptions.onClick = hideThenIsolateLegendClick;
   }
 
@@ -368,6 +425,19 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default" } = {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "nearest", axis: "x", intersect: false },
+      animation: {
+        x: {
+          type: "number",
+          duration: 0,
+        },
+        y: {
+          type: "number",
+          easing: "easeOutCubic",
+          duration: LINE_POINT_ANIMATION_DURATION,
+          from: lineYAxisBaseline,
+          delay: linePointAnimationDelay,
+        },
+      },
       plugins: {
         legend: legendOptions,
         tooltip: {
@@ -418,6 +488,26 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default" } = {
   };
 }
 
+function lineYAxisBaseline(context) {
+  if (context.type !== "data") {
+    return undefined;
+  }
+  if (context.chart?.chartArea) {
+    return context.chart.chartArea.bottom;
+  }
+  const scale = context.chart?.scales?.y;
+  return scale ? scale.getPixelForValue(scale.min) : undefined;
+}
+
+function linePointAnimationDelay(context) {
+  if (context.type !== "data" || context.yStarted) {
+    return 0;
+  }
+  context.yStarted = true;
+  const pointIndex = Number(context.dataIndex ?? context.index ?? 0);
+  return Math.min(pointIndex * LINE_POINT_STAGGER_MS, LINE_POINT_MAX_DELAY_MS);
+}
+
 function buildLineDataset(label, points, color) {
   return {
     label,
@@ -455,18 +545,16 @@ function hideThenIsolateLegendClick(_event, legendItem, legend) {
   chart.update();
 }
 
-function renderPlanWorkspace() {
-  const currentRows = rowsAtViewDate();
-  const chartRows = state.planMode === "combined" ? [...currentRows, ...state.plans] : state.plans;
-  const grouped = groupSum(chartRows, "Asset Type");
+function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
+  const grouped = groupSum(state.plans, "Asset Type");
   const entries = [...grouped.entries()].sort((a, b) => b[1] - a[1]);
   const labels = entries.map(([label]) => label);
   const values = entries.map(([, value]) => value);
   const total = values.reduce((sum, value) => sum + value, 0);
 
-  byId("planCenter").innerHTML = `<strong>${formatCurrency(total)}</strong><span>${state.planMode === "combined" ? "Combined" : "Plan"}</span>`;
+  byId("planCenter").innerHTML = `<strong>${formatCurrency(total)}</strong><span>Working plan</span>`;
   byId("planChartMeta").textContent = `${labels.length} groups`;
-  byId("planTableMeta").textContent = `${state.plans.length} rows`;
+  byId("planTableMeta").textContent = `${state.plans.length} rows from ${formatDateLabel(latestDataDate())}`;
 
   replaceChart("planChart", {
     type: "doughnut",
@@ -482,21 +570,28 @@ function renderPlanWorkspace() {
         },
       ],
     },
-    options: doughnutOptions(total),
+    options: doughnutOptions(total, doughnutAnimation),
   });
 
-  const sortedPlans = state.plans
-    .map((row, originalIndex) => ({ row, originalIndex }))
-    .sort((a, b) => b.row.Date.localeCompare(a.row.Date) || compareRows(a.row, b.row));
+  const sortedPlans = state.plans.map((row, originalIndex) => ({ row, originalIndex })).sort((a, b) => compareRows(a.row, b.row));
 
   byId("planTableBody").innerHTML = sortedPlans
     .map(({ row, originalIndex }, index) => {
       return `
         <tr>
-          <td>${escapeHtml(row.Date)}</td>
           <td>${escapeHtml(row["Asset Type"])}</td>
           <td>${escapeHtml(row.Ticker || "-")}</td>
-          <td class="number-cell">${formatCurrency(Number(row.Volume))}</td>
+          <td class="number-cell">
+            <input
+              class="volume-edit"
+              type="number"
+              min="0"
+              step="1"
+              value="${escapeHtml(row.Volume)}"
+              data-plan-volume-index="${originalIndex}"
+              aria-label="Edit volume for plan row ${index + 1}"
+            />
+          </td>
           <td class="action-cell">
             <button class="icon-button small" type="button" data-remove-plan-index="${originalIndex}" title="Remove plan ${index + 1}">
               <i data-lucide="x"></i>
@@ -507,12 +602,24 @@ function renderPlanWorkspace() {
     })
     .join("");
 
+  document.querySelectorAll("[data-plan-volume-index]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const rowIndex = Number(input.dataset.planVolumeIndex);
+      const parsedVolume = Number(input.value || 0);
+      const volume = Number.isFinite(parsedVolume) ? Math.max(0, Math.round(parsedVolume)) : 0;
+      state.plans[rowIndex].Volume = String(volume);
+      input.value = String(volume);
+      renderPlanWorkspace();
+      setPlanStatus("Volume updated");
+    });
+  });
+
   document.querySelectorAll("[data-remove-plan-index]").forEach((button) => {
     button.addEventListener("click", () => {
       const removeIndex = Number(button.dataset.removePlanIndex);
       state.plans = state.plans.filter((_row, index) => index !== removeIndex);
       renderPlanWorkspace();
-      setPlanStatus("Plan removed");
+      setPlanStatus("Row removed");
       renderIcons();
     });
   });
@@ -528,11 +635,12 @@ function replaceChart(chartId, config) {
   state.charts[chartId] = new Chart(canvas, config);
 }
 
-function doughnutOptions(total) {
+function doughnutOptions(total, animationMode = "scale") {
   return {
     responsive: true,
     maintainAspectRatio: false,
     cutout: "66%",
+    animation: doughnutAnimationOptions(animationMode),
     plugins: {
       legend: {
         position: "bottom",
@@ -553,6 +661,24 @@ function doughnutOptions(total) {
         },
       },
     },
+  };
+}
+
+function doughnutAnimationOptions(animationMode) {
+  if (animationMode === "rotate") {
+    return {
+      animateRotate: true,
+      animateScale: false,
+      duration: DOUGHNUT_ROTATE_ANIMATION_DURATION,
+      easing: "easeOutCubic",
+    };
+  }
+
+  return {
+    animateRotate: false,
+    animateScale: true,
+    duration: DOUGHNUT_SCALE_ANIMATION_DURATION,
+    easing: "easeOutCubic",
   };
 }
 
@@ -618,11 +744,11 @@ function normalizeCsvText(text, { defaultPlan = "No" } = {}) {
 
 function normalizeAssetType(row, ticker, majorityAssetTypes, isBalanceCash) {
   if (isBalanceCash) {
-    return "예금";
+    return CASH_ASSET_TYPE;
   }
 
-  if (EXPLICIT_ASSET_TYPE_BY_TICKER.has(ticker)) {
-    return EXPLICIT_ASSET_TYPE_BY_TICKER.get(ticker);
+  if (ticker && TICKER_ASSET_TYPE_BY_TICKER.has(ticker)) {
+    return TICKER_ASSET_TYPE_BY_TICKER.get(ticker);
   }
 
   const current = normalizeAssetTypeLabel(getField(row, ["Asset Type", "AssetType", "Type"]));
@@ -634,16 +760,12 @@ function normalizeAssetType(row, ticker, majorityAssetTypes, isBalanceCash) {
     return majorityAssetTypes.get(ticker);
   }
 
-  if (FALLBACK_ASSET_TYPE_BY_TICKER.has(ticker)) {
-    return FALLBACK_ASSET_TYPE_BY_TICKER.get(ticker);
-  }
-
   const firm = normalizeText(getField(row, ["Securities Firm", "Firm", "Broker"]));
   if (!ticker && BANK_LIKE_FIRMS.has(firm)) {
-    return "예금";
+    return CASH_ASSET_TYPE;
   }
 
-  return "미분류";
+  return UNCLASSIFIED_ASSET_TYPE;
 }
 
 function inferMajorityAssetTypes(rawRows) {
@@ -671,7 +793,7 @@ function inferMajorityAssetTypes(rawRows) {
 }
 
 function collectKnownTickers(rawRows) {
-  const tickers = new Set([...EXPLICIT_ASSET_TYPE_BY_TICKER.keys(), ...FALLBACK_ASSET_TYPE_BY_TICKER.keys()]);
+  const tickers = new Set(TICKER_ASSET_TYPE_BY_TICKER.keys());
   rawRows.forEach((row) => {
     const ticker = normalizeTicker(getField(row, ["Ticker"]));
     if (ticker) {
@@ -747,7 +869,7 @@ function normalizeText(value) {
 }
 
 function isBalanceName(value) {
-  return normalizeText(value).startsWith("잔고");
+  return normalizeText(value).startsWith(BALANCE_PREFIX);
 }
 
 function monthIndex(name) {
@@ -771,7 +893,7 @@ function rowsAtViewDate() {
 function groupSum(rows, key) {
   const groups = new Map();
   rows.forEach((row) => {
-    const label = row[key] || "미분류";
+    const label = row[key] || UNCLASSIFIED_ASSET_TYPE;
     groups.set(label, (groups.get(label) || 0) + Number(row.Volume || 0));
   });
   return groups;
@@ -780,7 +902,7 @@ function groupSum(rows, key) {
 function groupRows(rows, key) {
   const groups = new Map();
   rows.forEach((row) => {
-    const label = row[key] || "미분류";
+    const label = row[key] || UNCLASSIFIED_ASSET_TYPE;
     if (!groups.has(label)) {
       groups.set(label, []);
     }

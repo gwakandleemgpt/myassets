@@ -45,6 +45,36 @@ Interactive commands:
 - `PROMPT`: copy the LLM system prompt to your clipboard again and print it as a fallback.
 - `ABORT`: quit without writing files.
 
+## Catalog Management
+
+Asset types, securities firms, ticker-to-asset-type mappings, and dashboard colors live in `data/catalog.json`.
+
+To edit them with a visual color-picker tool, double-click `edit-catalog.bat`, or run:
+
+```powershell
+.\edit-catalog.bat
+```
+
+The editor can add or update:
+
+- Asset types and their chart colors
+- Securities firms/banks and their chart colors
+- Whether a firm should be treated as `예금` with an empty ticker
+- Tickers, their asset types, and their chart colors
+
+The editor opens in your browser with color pickers, hex fields, and row previews. By default, Save writes `data/catalog.json`, commits that file, and pushes the current git branch to `origin`.
+
+Useful checks:
+
+```powershell
+node tools/catalog-ui.mjs --no-push
+node tools/catalog-ui.mjs --no-commit
+```
+
+## Future Plan
+
+The Future Plan tab starts as an editable copy of the latest actual holdings snapshot. It does not load `data/portfolio-plans.csv` on startup. Brokerage/firm is ignored in the working plan, so rows are merged by asset type and ticker. Edit volumes directly in the table, remove rows with `X`, add new rows from the form, or use `Reset latest` to rebuild the working plan from the latest snapshot.
+
 ## LLM Output Format
 
 The tool copies a complete system prompt to your clipboard at launch, then prints it as a fallback. Its core instruction is that the LLM should return only plain CSV data rows per screenshot:
@@ -55,7 +85,7 @@ Date,Asset Type,Securities Firm,Ticker,Volume
 
 Rules:
 - Use YYYY-MM-DD for Date on every row.
-- Use one of these Asset Type values when possible: 공격형 투자, 일반 투자, 미래기술 투자, 배당주, 예금, 비상금, 소비, 미분류.
+- Use one of the Asset Type values listed in the copied system prompt.
 - Extract only actual/current holdings. Do not output future plans, target plans, or a Plans? column.
 - Treat `키움저축은행`, `우리은행`, and `예수금` rows as `예금` with an empty `Ticker`.
 - Use an empty Ticker for cash/deposit rows.
@@ -88,20 +118,20 @@ node tools/clean-data.mjs path\to\source-export.csv
 It produces:
 
 - `data/portfolio-clean.csv`: actual holdings used by the dashboard
-- `data/portfolio-plans.csv`: plan rows used by the Future Plan tab
+- `data/portfolio-plans.csv`: archived source rows that had `Plans? = Yes`
 
 Cleaning rules:
 
 - Drops `Name`
 - Skips rows without `Volume`
-- Splits source rows with `Plans? = Yes` into `data/portfolio-plans.csv`
+- Splits source rows with `Plans? = Yes` into `data/portfolio-plans.csv` for archive/reference only
 - Writes split output files without a `Plans?` column
 - Normalizes dates to `YYYY-MM-DD`
 - Normalizes volumes to plain numbers
-- Sets `AMDL`, `GGLL`, and `AMD3` to `공격형 투자`
+- Uses `data/catalog.json` for ticker asset type defaults, securities firm deposit handling, and known colors
 - Treats `잔고...` rows as `예금`
 - Uses existing ticker history/defaults to fill missing asset types where possible
 
 ## GitHub Pages
 
-GitHub Pages is static, so the site itself does not write back into the repository. Permanent updates go through `tools/import-paste.mjs`, which copies/prints the LLM prompt, waits for pasted input batches in the terminal, edits the repo CSVs, and pushes them with git.
+GitHub Pages is static, so the site itself does not write back into the repository. Permanent data updates go through `tools/import-paste.mjs`; catalog updates go through `tools/catalog-ui.mjs`. Both tools can commit and push their repo changes with git.
