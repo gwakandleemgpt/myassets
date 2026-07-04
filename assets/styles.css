@@ -488,6 +488,8 @@ svg {
 }
 
 .pie-canvas-frame canvas {
+  position: relative;
+  z-index: 2;
   display: block;
   width: 100% !important;
   height: 100% !important;
@@ -543,6 +545,7 @@ svg {
 
 .donut-center {
   position: absolute;
+  z-index: 1;
   left: 50%;
   top: 50%;
   width: min(170px, 45%);
