@@ -430,6 +430,8 @@ svg {
 
 .chart-panel {
   position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 16px;
   overflow: hidden;
@@ -468,7 +470,67 @@ svg {
 }
 
 .pie-frame {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
   height: 320px;
+}
+
+.pie-panel .pie-frame,
+.pie-workspace-panel .pie-frame {
+  flex: 0 0 auto;
+  margin-block: auto;
+}
+
+.pie-canvas-frame {
+  position: relative;
+  min-height: 0;
+}
+
+.pie-canvas-frame canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.pie-legend {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  min-height: 22px;
+}
+
+.pie-legend button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #d5dce7;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.pie-legend button:hover,
+.pie-legend button:focus-visible {
+  color: var(--ink-strong);
+}
+
+.pie-legend-swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--legend-color);
+  box-shadow: inset 0 0 0 1px var(--legend-border);
 }
 
 .line-frame {
@@ -482,7 +544,7 @@ svg {
 .donut-center {
   position: absolute;
   left: 50%;
-  top: 43%;
+  top: 50%;
   width: min(170px, 45%);
   transform: translate(-50%, -50%);
   display: grid;

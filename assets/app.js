@@ -29,6 +29,10 @@ const DOUGHNUT_ROTATE_ANIMATION_DURATION = 520;
 const LINE_POINT_ANIMATION_DURATION = 620;
 const LINE_POINT_STAGGER_MS = 45;
 const LINE_POINT_MAX_DELAY_MS = 720;
+const LINE_BASE_BORDER_WIDTH = 1.8;
+const LINE_HOVER_BORDER_WIDTH = 2.8;
+const LINE_DIM_BORDER_WIDTH = 0.9;
+const LINE_POINT_BORDER_WIDTH = 1.8;
 const unitNumberFormatter = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 0,
 });
@@ -40,12 +44,15 @@ const state = {
   dates: [],
   viewDate: "",
   charts: {},
+  suppressLineAnimations: false,
+  resizeAnimationTimer: 0,
 };
 
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   configureChartDefaults();
+  wireResizeAnimationGuard();
   wireTabs();
   wireDashboardControls();
   wirePlanControls();
@@ -167,6 +174,34 @@ function wireTabs() {
       });
     });
   });
+}
+
+function wireResizeAnimationGuard() {
+  window.addEventListener(
+    "resize",
+    () => suppressLineAnimationsForResize(),
+    { passive: true },
+  );
+}
+
+function suppressLineAnimationsForResize() {
+  state.suppressLineAnimations = true;
+  Object.values(state.charts).forEach((chart) => {
+    if (chart.config.type === "line") {
+      chart.stop();
+    }
+  });
+
+  window.clearTimeout(state.resizeAnimationTimer);
+  state.resizeAnimationTimer = window.setTimeout(() => {
+    Object.values(state.charts).forEach((chart) => {
+      if (chart.config.type === "line") {
+        chart.stop();
+        chart.update("none");
+      }
+    });
+    state.suppressLineAnimations = false;
+  }, 220);
 }
 
 function wireDashboardControls() {
@@ -313,13 +348,11 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   byId("metricTotal").textContent = formatCurrency(total);
   byId("metricInvestment").innerHTML = `${formatCurrency(investmentTotal)} <span class="metric-percent">(${investmentPercent}%)</span>`;
 
-  renderDoughnut({
+  renderAssetDistributionChart({
     chartId: "assetDistributionChart",
     centerId: "assetDistributionCenter",
     metaId: "assetDistributionMeta",
     rows,
-    key: "Asset Type",
-    colorKind: "asset",
     animationMode: doughnutAnimation,
   });
 
@@ -346,6 +379,160 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   if (updateLines) {
     renderLineCharts();
   }
+}
+
+function renderAssetDistributionChart({ chartId, centerId, metaId, rows, animationMode = "scale" }) {
+  const { parents, details, total } = buildAssetDistributionSegments(rows);
+  const labels = details.map((detail) => detail.label);
+
+  byId(centerId).innerHTML = `<strong>${formatCurrency(total)}</strong><span>${formatDateLabel(state.viewDate)}</span>`;
+  byId(metaId).textContent = `${parents.length} groups / ${details.length} splits`;
+
+  replaceChart(chartId, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Asset detail",
+          data: details.map((detail) => detail.value),
+          backgroundColor: details.map((detail) => detail.color),
+          borderColor: details.map((detail) => detail.borderColor),
+          borderWidth: 1.5,
+          hoverOffset: 8,
+          assetDistributionKind: "detail",
+          assetDistributionRecords: details,
+        },
+      ],
+    },
+    options: doughnutOptions(total, animationMode, {
+      cutout: "66%",
+      legendLabels: assetDistributionLegendLabels(parents),
+      tooltipCallbacks: assetDistributionTooltipCallbacks(total),
+    }),
+  });
+}
+
+function buildAssetDistributionSegments(rows) {
+  const parentEntries = [...groupRows(rows, "Asset Type").entries()]
+    .map(([label, groupRowsForLabel], index) => {
+      const color = colorFor("asset", label, index);
+      return {
+        label,
+        value: sumRows(groupRowsForLabel),
+        rows: groupRowsForLabel,
+        color,
+        borderColor: borderFor(color),
+      };
+    })
+    .sort((a, b) => b.value - a.value);
+
+  const details = parentEntries.flatMap((parent, parentIndex) => {
+    const detailEntries = [...groupRowsBy(parent.rows, (row) => assetDistributionDetailLabel(row, parent.label)).entries()]
+      .map(([label, detailRows], detailIndex) => {
+        const kind = assetDistributionDetailKind(detailRows[0], parent.label);
+        return {
+          label,
+          parentLabel: parent.label,
+          value: sumRows(detailRows),
+          kind,
+          parentValue: parent.value,
+          parentColor: parent.color,
+          parentIndex,
+          detailIndex,
+        };
+      })
+      .sort((a, b) => b.value - a.value);
+
+    return detailEntries.map((detail, detailIndex) => {
+      return {
+        ...detail,
+        detailIndex,
+        color: parent.color,
+        borderColor: borderFor(parent.color),
+      };
+    });
+  });
+
+  return {
+    parents: parentEntries.map(({ rows: _rows, ...parent }) => ({
+      ...parent,
+      detailIndexes: details.map((detail, index) => (detail.parentLabel === parent.label ? index : -1)).filter((index) => index >= 0),
+    })),
+    details,
+    total: parentEntries.reduce((sum, parent) => sum + parent.value, 0),
+  };
+}
+
+function assetDistributionDetailLabel(row, assetType) {
+  if (row.Ticker) {
+    return row.Ticker;
+  }
+  if (assetType === CASH_ASSET_TYPE) {
+    return row["Securities Firm"] || CASH_ASSET_TYPE;
+  }
+  return assetType;
+}
+
+function assetDistributionDetailKind(row, assetType) {
+  if (row.Ticker) {
+    return "ticker";
+  }
+  if (assetType === CASH_ASSET_TYPE) {
+    return "firm";
+  }
+  return "asset";
+}
+
+function assetDistributionLegendLabels(parents) {
+  return () =>
+    parents.map((parent, index) => ({
+      text: parent.label,
+      fillStyle: parent.color,
+      fontColor: "#d5dce7",
+      strokeStyle: parent.borderColor,
+      lineWidth: 1.5,
+      pointStyle: "circle",
+      hidden: false,
+      index,
+      assetDistributionRecord: parent,
+      assetDistributionDetailIndexes: parent.detailIndexes,
+    }));
+}
+
+function assetDistributionTooltipCallbacks(total) {
+  return {
+    title: (items) => {
+      const legendRecord = items[0]?.chart?.$legendHoverRecord;
+      if (legendRecord) {
+        return legendRecord.label;
+      }
+      const record = assetDistributionTooltipRecord(items[0]);
+      if (!record) {
+        return "";
+      }
+      return record.parentLabel ? `${record.parentLabel} / ${record.label}` : record.label;
+    },
+    label: (item) => {
+      const legendRecord = item.chart?.$legendHoverRecord;
+      if (legendRecord) {
+        const percent = total ? `${((legendRecord.value / total) * 100).toFixed(1)}%` : "0.0%";
+        return `${legendRecord.label}: ${formatCurrency(legendRecord.value)} (${percent})`;
+      }
+      const record = assetDistributionTooltipRecord(item);
+      const value = Number(item.parsed || 0);
+      const totalPercent = total ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
+      if (record?.parentLabel) {
+        const parentPercent = record.parentValue ? `${((value / record.parentValue) * 100).toFixed(1)}%` : "0.0%";
+        return `${record.label}: ${formatCurrency(value)} (${parentPercent} of ${record.parentLabel}, ${totalPercent} total)`;
+      }
+      return `${record?.label || item.label}: ${formatCurrency(value)} (${totalPercent})`;
+    },
+  };
+}
+
+function assetDistributionTooltipRecord(item) {
+  return item?.dataset?.assetDistributionRecords?.[item.dataIndex] || null;
 }
 
 function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind, animationMode = "scale" }) {
@@ -385,10 +572,17 @@ function renderLineCharts() {
   const allPoints = pointsFromRows(state.holdings);
   const investmentPoints = pointsFromRows(state.holdings.filter((row) => row.Ticker));
 
-  replaceChart("assetTrendChart", lineChartConfig(timeline, [buildLineDataset("Total assets", allPoints, "#c7b8ff")], { showLegend: false }));
+  replaceChart(
+    "assetTrendChart",
+    lineChartConfig(timeline, [buildLineDataset("Total assets", allPoints, "#c7b8ff", { areaFill: true, borderWidth: 1.8 })], {
+      showLegend: false,
+    }),
+  );
   replaceChart(
     "investmentTrendChart",
-    lineChartConfig(timeline, [buildLineDataset("Ticker holdings", investmentPoints, "#8fdda0")], { showLegend: false }),
+    lineChartConfig(timeline, [buildLineDataset("Ticker holdings", investmentPoints, "#8fdda0", { areaFill: true, borderWidth: 1.8 })], {
+      showLegend: false,
+    }),
   );
 
   const tickerGroups = groupRows(state.holdings.filter((row) => row.Ticker), "Ticker");
@@ -399,10 +593,13 @@ function renderLineCharts() {
       return buildLineDataset(ticker, pointsFromRows(tickerRows), color);
     });
 
-  replaceChart("valueTrendChart", lineChartConfig(timeline, tickerDatasets, { legendClickMode: "hideThenIsolate" }));
+  replaceChart(
+    "valueTrendChart",
+    lineChartConfig(timeline, tickerDatasets, { legendClickMode: "hideThenIsolate", legendHoverMode: "semiIsolate" }),
+  );
 }
 
-function lineChartConfig(timeline, datasets, { legendClickMode = "default", showLegend = true } = {}) {
+function lineChartConfig(timeline, datasets, { legendClickMode = "default", legendHoverMode = "default", showLegend = true } = {}) {
   const legendOptions = showLegend
     ? {
         position: "bottom",
@@ -418,12 +615,18 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", show
     legendOptions.onClick = hideThenIsolateLegendClick;
   }
 
+  if (showLegend && legendHoverMode === "semiIsolate") {
+    legendOptions.onHover = semiIsolateLineLegendHover;
+    legendOptions.onLeave = semiIsolateLineLegendLeave;
+  }
+
   return {
     type: "line",
     data: { datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      onResize: suppressLineAnimationsForResize,
       interaction: { mode: "nearest", axis: "x", intersect: false },
       animation: {
         x: {
@@ -433,7 +636,7 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", show
         y: {
           type: "number",
           easing: "easeOutCubic",
-          duration: LINE_POINT_ANIMATION_DURATION,
+          duration: lineAnimationDuration,
           from: lineYAxisBaseline,
           delay: linePointAnimationDelay,
         },
@@ -489,6 +692,9 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", show
 }
 
 function lineYAxisBaseline(context) {
+  if (state.suppressLineAnimations) {
+    return undefined;
+  }
   if (context.type !== "data") {
     return undefined;
   }
@@ -499,8 +705,12 @@ function lineYAxisBaseline(context) {
   return scale ? scale.getPixelForValue(scale.min) : undefined;
 }
 
+function lineAnimationDuration() {
+  return state.suppressLineAnimations ? 0 : LINE_POINT_ANIMATION_DURATION;
+}
+
 function linePointAnimationDelay(context) {
-  if (context.type !== "data" || context.yStarted) {
+  if (state.suppressLineAnimations || context.type !== "data" || context.yStarted) {
     return 0;
   }
   context.yStarted = true;
@@ -508,19 +718,41 @@ function linePointAnimationDelay(context) {
   return Math.min(pointIndex * LINE_POINT_STAGGER_MS, LINE_POINT_MAX_DELAY_MS);
 }
 
-function buildLineDataset(label, points, color) {
+function buildLineDataset(label, points, color, { areaFill = false, borderWidth = LINE_BASE_BORDER_WIDTH } = {}) {
   return {
     label,
     data: points.map((point) => ({ x: dateToDay(point.date), y: point.value, date: point.date })),
+    baseColor: color,
+    baseBorderWidth: borderWidth,
     borderColor: color,
-    backgroundColor: color,
-    borderWidth: 2.5,
+    backgroundColor: areaFill ? lineAreaGradient(color) : color,
+    borderWidth,
+    pointBackgroundColor: color,
+    pointBorderColor: color,
+    pointBorderWidth: LINE_POINT_BORDER_WIDTH,
     cubicInterpolationMode: "monotone",
+    fill: areaFill ? "start" : false,
     tension: 0.42,
     spanGaps: true,
     pointRadius: 3,
     pointHoverRadius: 6,
     pointHitRadius: 8,
+  };
+}
+
+function lineAreaGradient(color) {
+  return (context) => {
+    const { chart } = context;
+    const area = chart.chartArea;
+    if (!area) {
+      return colorWithAlpha(color, 0.12);
+    }
+
+    const gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+    gradient.addColorStop(0, colorWithAlpha(color, 0.24));
+    gradient.addColorStop(0.58, colorWithAlpha(color, 0.1));
+    gradient.addColorStop(1, colorWithAlpha(color, 0.02));
+    return gradient;
   };
 }
 
@@ -542,7 +774,100 @@ function hideThenIsolateLegendClick(_event, legendItem, legend) {
     });
   }
 
-  chart.update();
+  chart.update("none");
+}
+
+function semiIsolateLineLegendHover(_event, legendItem, legend) {
+  const chart = legend.chart;
+  const hoveredIndex = legendItem.datasetIndex;
+
+  chart.data.datasets.forEach((dataset, index) => {
+    const baseColor = dataset.baseColor || dataset.borderColor;
+    if (index === hoveredIndex) {
+      dataset.borderColor = baseColor;
+      dataset.backgroundColor = baseColor;
+      dataset.pointBackgroundColor = baseColor;
+      dataset.pointBorderColor = baseColor;
+      dataset.borderWidth = LINE_HOVER_BORDER_WIDTH;
+      dataset.pointRadius = 4;
+      dataset.pointHoverRadius = 7;
+      return;
+    }
+
+    dataset.borderColor = colorWithAlpha(baseColor, 0.16);
+    dataset.backgroundColor = colorWithAlpha(baseColor, 0.16);
+    dataset.pointBackgroundColor = colorWithAlpha(baseColor, 0.18);
+    dataset.pointBorderColor = colorWithAlpha(baseColor, 0.18);
+    dataset.borderWidth = LINE_DIM_BORDER_WIDTH;
+    dataset.pointRadius = 1.5;
+    dataset.pointHoverRadius = 4;
+  });
+
+  chart.update("none");
+  chart.data.datasets.forEach((dataset, index) => {
+    const baseColor = dataset.baseColor || dataset.borderColor;
+    const pointColor = index === hoveredIndex ? baseColor : colorWithAlpha(baseColor, 0.18);
+    applyLinePointElementStyle(chart, index, {
+      color: pointColor,
+      radius: index === hoveredIndex ? 4 : 1.5,
+      hoverRadius: index === hoveredIndex ? 7 : 4,
+      borderWidth: index === hoveredIndex ? LINE_POINT_BORDER_WIDTH : 1,
+    });
+  });
+  chart.draw();
+}
+
+function semiIsolateLineLegendLeave(_event, _legendItem, legend) {
+  const chart = legend.chart;
+  chart.data.datasets.forEach((dataset) => {
+    const baseColor = dataset.baseColor || dataset.borderColor;
+    const baseBorderWidth = dataset.baseBorderWidth || LINE_BASE_BORDER_WIDTH;
+    dataset.borderColor = baseColor;
+    dataset.backgroundColor = baseColor;
+    dataset.pointBackgroundColor = baseColor;
+    dataset.pointBorderColor = baseColor;
+    dataset.borderWidth = baseBorderWidth;
+    dataset.pointRadius = 3;
+    dataset.pointHoverRadius = 6;
+  });
+  chart.update("none");
+  chart.data.datasets.forEach((dataset, index) => {
+    const baseColor = dataset.baseColor || dataset.borderColor;
+    applyLinePointElementStyle(chart, index, {
+      color: baseColor,
+      radius: 3,
+      hoverRadius: 6,
+      borderWidth: LINE_POINT_BORDER_WIDTH,
+    });
+  });
+  chart.draw();
+}
+
+function applyLinePointElementStyle(chart, datasetIndex, { color, radius, hoverRadius, borderWidth }) {
+  chart.getDatasetMeta(datasetIndex).data.forEach((point) => {
+    if (!point?.options) {
+      return;
+    }
+    point.options.backgroundColor = color;
+    point.options.borderColor = color;
+    point.options.radius = radius;
+    point.options.hoverRadius = hoverRadius;
+    point.options.borderWidth = borderWidth;
+  });
+}
+
+function colorWithAlpha(color, alpha) {
+  const normalizedColor = String(color || "").trim();
+  const hexMatch = normalizedColor.match(/^#([0-9a-f]{6})$/i);
+  if (!hexMatch) {
+    return normalizedColor;
+  }
+
+  const value = Number.parseInt(hexMatch[1], 16);
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
 function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
@@ -633,18 +958,29 @@ function replaceChart(chartId, config) {
     state.charts[chartId].destroy();
   }
   state.charts[chartId] = new Chart(canvas, config);
+  renderExternalDoughnutLegend(state.charts[chartId]);
 }
 
-function doughnutOptions(total, animationMode = "scale") {
+function doughnutOptions(total, animationMode = "scale", { cutout = "66%", legendLabels, tooltipCallbacks } = {}) {
   return {
     responsive: true,
     maintainAspectRatio: false,
-    cutout: "66%",
+    cutout,
     animation: doughnutAnimationOptions(animationMode),
     plugins: {
       legend: {
+        display: false,
         position: "bottom",
-        labels: { boxWidth: 10, boxHeight: 10, color: "#d5dce7", usePointStyle: true },
+        onClick: null,
+        onHover: handleDoughnutLegendHover,
+        onLeave: handleDoughnutLegendLeave,
+        labels: {
+          boxWidth: 10,
+          boxHeight: 10,
+          color: "#d5dce7",
+          usePointStyle: true,
+          ...(legendLabels ? { generateLabels: legendLabels } : {}),
+        },
       },
       tooltip: {
         backgroundColor: "rgba(24, 29, 24, 0.94)",
@@ -652,16 +988,105 @@ function doughnutOptions(total, animationMode = "scale") {
         borderWidth: 1,
         titleColor: "#f3f6fb",
         bodyColor: "#dce3ee",
-        callbacks: {
-          label: (item) => {
-            const value = item.parsed;
-            const percent = total ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
-            return `${item.label}: ${formatCurrency(value)} (${percent})`;
+        callbacks:
+          tooltipCallbacks || {
+            label: (item) => {
+              const value = item.parsed;
+              const percent = total ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
+              return `${item.label}: ${formatCurrency(value)} (${percent})`;
+            },
           },
-        },
       },
     },
   };
+}
+
+function renderExternalDoughnutLegend(chart) {
+  if (chart.config.type !== "doughnut") {
+    return;
+  }
+
+  const frame = chart.canvas.closest(".pie-frame");
+  if (!frame) {
+    return;
+  }
+
+  let legend = frame.querySelector(".pie-legend");
+  if (!legend) {
+    legend = document.createElement("div");
+    legend.className = "pie-legend";
+    frame.append(legend);
+  }
+
+  const generateLabels =
+    chart.options.plugins.legend.labels.generateLabels ||
+    chart.config._config.options.plugins.legend.labels.generateLabels ||
+    Chart.defaults.plugins.legend.labels.generateLabels;
+  const items = generateLabels(chart);
+  legend.innerHTML = "";
+
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.title = item.text;
+    button.addEventListener("click", (event) => event.preventDefault());
+    button.addEventListener("mouseenter", (event) => handleDoughnutLegendHover(event, item, { chart }));
+    button.addEventListener("mouseleave", (event) => handleDoughnutLegendLeave(event, item, { chart }));
+    button.addEventListener("focus", (event) => handleDoughnutLegendHover(event, item, { chart }));
+    button.addEventListener("blur", (event) => handleDoughnutLegendLeave(event, item, { chart }));
+
+    const swatch = document.createElement("span");
+    swatch.className = "pie-legend-swatch";
+    swatch.style.setProperty("--legend-color", item.fillStyle || "#d5dce7");
+    swatch.style.setProperty("--legend-border", item.strokeStyle || "rgba(18, 22, 18, 0.88)");
+
+    const text = document.createElement("span");
+    text.textContent = item.text;
+
+    button.append(swatch, text);
+    legend.append(button);
+  });
+}
+
+function handleDoughnutLegendHover(event, legendItem, legend) {
+  const chart = legend.chart;
+  const activeElements = doughnutLegendActiveElements(legendItem);
+  if (!activeElements.length) {
+    return;
+  }
+
+  chart.$legendHoverRecord = legendItem.assetDistributionRecord || null;
+  chart.canvas.style.cursor = "pointer";
+  chart.setActiveElements(activeElements);
+  chart.tooltip.setActiveElements([activeElements[0]], doughnutLegendTooltipPosition(chart, activeElements[0], event));
+  chart.update();
+}
+
+function handleDoughnutLegendLeave(_event, _legendItem, legend) {
+  const chart = legend.chart;
+  chart.$legendHoverRecord = null;
+  chart.canvas.style.cursor = "";
+  chart.setActiveElements([]);
+  chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+  chart.update();
+}
+
+function doughnutLegendActiveElements(legendItem) {
+  if (Array.isArray(legendItem.assetDistributionDetailIndexes)) {
+    return legendItem.assetDistributionDetailIndexes.map((index) => ({ datasetIndex: 0, index }));
+  }
+
+  if (Number.isInteger(legendItem.index)) {
+    const datasetIndex = Number.isInteger(legendItem.datasetIndex) ? legendItem.datasetIndex : 0;
+    return [{ datasetIndex, index: legendItem.index }];
+  }
+
+  return [];
+}
+
+function doughnutLegendTooltipPosition(chart, activeElement, event) {
+  const element = chart.getDatasetMeta(activeElement.datasetIndex).data[activeElement.index];
+  return element?.tooltipPosition() || { x: event?.x ?? chart.width / 2, y: event?.y ?? chart.height / 2 };
 }
 
 function doughnutAnimationOptions(animationMode) {
@@ -903,6 +1328,18 @@ function groupRows(rows, key) {
   const groups = new Map();
   rows.forEach((row) => {
     const label = row[key] || UNCLASSIFIED_ASSET_TYPE;
+    if (!groups.has(label)) {
+      groups.set(label, []);
+    }
+    groups.get(label).push(row);
+  });
+  return groups;
+}
+
+function groupRowsBy(rows, getLabel) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const label = getLabel(row) || UNCLASSIFIED_ASSET_TYPE;
     if (!groups.has(label)) {
       groups.set(label, []);
     }

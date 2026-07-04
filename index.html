@@ -4,11 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Asset Monitor</title>
-    <link rel="stylesheet" href="assets/styles.css?v=20260704p" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260704ab" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="assets/app.js?v=20260704p" defer></script>
+    <script src="assets/app.js?v=20260704ab" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -70,8 +70,10 @@
                 <span id="assetDistributionMeta"></span>
               </header>
               <div class="pie-frame">
-                <canvas id="assetDistributionChart"></canvas>
-                <div id="assetDistributionCenter" class="donut-center"></div>
+                <div class="pie-canvas-frame">
+                  <canvas id="assetDistributionChart"></canvas>
+                  <div id="assetDistributionCenter" class="donut-center"></div>
+                </div>
               </div>
             </article>
 
@@ -91,8 +93,10 @@
                 <span id="portfolioMeta"></span>
               </header>
               <div class="pie-frame">
-                <canvas id="portfolioChart"></canvas>
-                <div id="portfolioCenter" class="donut-center"></div>
+                <div class="pie-canvas-frame">
+                  <canvas id="portfolioChart"></canvas>
+                  <div id="portfolioCenter" class="donut-center"></div>
+                </div>
               </div>
             </article>
 
@@ -122,8 +126,10 @@
                 <span id="firmMeta"></span>
               </header>
               <div class="pie-frame">
-                <canvas id="firmChart"></canvas>
-                <div id="firmCenter" class="donut-center"></div>
+                <div class="pie-canvas-frame">
+                  <canvas id="firmChart"></canvas>
+                  <div id="firmCenter" class="donut-center"></div>
+                </div>
               </div>
             </article>
           </section>
@@ -168,14 +174,16 @@
               </div>
             </section>
 
-            <section class="workspace-panel">
+            <section class="workspace-panel pie-workspace-panel">
               <div class="panel-header">
                 <h2>Mock Asset Distribution</h2>
                 <span id="planChartMeta">-</span>
               </div>
               <div class="pie-frame plan-pie">
-                <canvas id="planChart"></canvas>
-                <div id="planCenter" class="donut-center"></div>
+                <div class="pie-canvas-frame">
+                  <canvas id="planChart"></canvas>
+                  <div id="planCenter" class="donut-center"></div>
+                </div>
               </div>
             </section>
 
