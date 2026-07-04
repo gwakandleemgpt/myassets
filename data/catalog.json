@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "assetTypes": [
+    "공격형 투자",
+    "일반 투자",
+    "미래기술 투자",
+    "배당주",
+    "예금",
+    "비상금",
+    "소비",
+    "미분류"
+  ],
+  "cashAssetType": "예금",
+  "unclassifiedAssetType": "미분류",
+  "balanceNamePrefix": "잔고",
+  "cashLabels": [
+    "예수금"
+  ],
+  "bankLikeFirms": [
+    "우리은행",
+    "카카오뱅크",
+    "키움저축은행"
+  ],
+  "tickerAssetTypes": {
+    "인베니아": "일반 투자",
+    "ADBE": "일반 투자",
+    "AMD": "일반 투자",
+    "AMD3": "공격형 투자",
+    "AMDL": "공격형 투자",
+    "GGLL": "공격형 투자",
+    "GOOGL": "일반 투자",
+    "IONQ": "미래기술 투자",
+    "KO": "배당주",
+    "META": "일반 투자",
+    "NPCE": "미래기술 투자",
+    "QQQ": "일반 투자",
+    "RGTI": "미래기술 투자",
+    "SCHD": "배당주",
+    "STKH": "미래기술 투자"
+  },
+  "colors": {
+    "asset": {
+      "공격적 투자": "#f89a9a",
+      "공격형 투자": "#f24a4a",
+      "미래기술 투자": "#e8edf2",
+      "미분류": "#a8b3bf",
+      "배당주": "#8fdda0",
+      "비상금": "#c7b8ff",
+      "소비": "#f5a3b7",
+      "예금": "#f4d66d",
+      "일반 투자": "#f3a8cf"
+    },
+    "ticker": {
+      "인베니아": "#f5a363",
+      "ADBE": "#f39a9a",
+      "AMD": "#eef3f8",
+      "AMD3": "#9aa3ae",
+      "AMDL": "#d4dbe3",
+      "GGLL": "#6fad78",
+      "GOOGL": "#8edb99",
+      "IONQ": "#c99a76",
+      "KO": "#ef858c",
+      "META": "#a8a3ff",
+      "NPCE": "#b9edc4",
+      "QQQ": "#8fb7ff",
+      "RGTI": "#9eddf2",
+      "SCHD": "#d9be8f",
+      "STKH": "#626b76"
+    },
+    "firm": {
+      "나무증권": "#9ce2a1",
+      "대신증권": "#f5a363",
+      "미분류": "#a8b3bf",
+      "삼성증권": "#9eddf2",
+      "우리은행": "#8fb7ff",
+      "카카오뱅크": "#ffe07a",
+      "키움저축은행": "#f4a9d4",
+      "키움증권": "#bea7ff",
+      "KB증권": "#e8cc63"
+    },
+    "fallback": [
+      "#f89a9a",
+      "#8fdda0",
+      "#f4d66d",
+      "#bea7ff",
+      "#91e4d1",
+      "#f5a363",
+      "#8fb7ff",
+      "#f5a3b7",
+      "#c8de7f",
+      "#d0a7ff"
+    ]
+  }
+}
