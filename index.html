@@ -4,11 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Asset Monitor</title>
-    <link rel="stylesheet" href="assets/styles.css?v=20260704h" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260704i" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="assets/app.js?v=20260704h" defer></script>
+    <script src="assets/app.js?v=20260704i" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -23,10 +23,6 @@
           <button class="tab-button is-active" type="button" data-tab="dashboard" aria-selected="true">
             <i data-lucide="chart-pie"></i>
             <span>Dashboard</span>
-          </button>
-          <button class="tab-button" type="button" data-tab="upload" aria-selected="false">
-            <i data-lucide="upload"></i>
-            <span>Upload</span>
           </button>
           <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
             <i data-lucide="list-plus"></i>
@@ -44,7 +40,7 @@
             </label>
             <input id="dateSlider" class="date-slider" type="range" min="0" value="0" />
             <div class="button-row">
-              <button id="resetDataBtn" class="icon-button" type="button" title="Reset to source CSV">
+              <button id="resetDataBtn" class="icon-button" type="button" title="Reload source CSV">
                 <i data-lucide="refresh-ccw"></i>
               </button>
               <button id="exportHoldingsBtn" class="text-button" type="button">
@@ -139,75 +135,6 @@
           </section>
         </section>
 
-        <section id="upload" class="tab-panel">
-          <div class="workspace-grid">
-            <section class="workspace-panel">
-              <div class="panel-header">
-                <h2>Upload Data</h2>
-                <span id="uploadStatus">Ready</span>
-              </div>
-
-              <div class="upload-actions">
-                <button id="chooseFileBtn" class="text-button" type="button">
-                  <i data-lucide="file-up"></i>
-                  <span>CSV file</span>
-                </button>
-                <input id="csvFileInput" type="file" accept=".csv,text/csv" hidden />
-                <button id="replaceDataBtn" class="text-button primary" type="button">
-                  <i data-lucide="replace"></i>
-                  <span>Replace</span>
-                </button>
-                <button id="mergeDataBtn" class="text-button" type="button">
-                  <i data-lucide="git-merge"></i>
-                  <span>Merge</span>
-                </button>
-              </div>
-
-              <label class="field block-field" for="csvInput">
-                <span>Paste CSV</span>
-                <textarea
-                  id="csvInput"
-                  rows="12"
-                  spellcheck="false"
-                  placeholder="Date,Asset Type,Plans?,Securities Firm,Ticker,Volume"
-                ></textarea>
-              </label>
-
-              <div class="upload-actions">
-                <button id="clearInputBtn" class="text-button" type="button">
-                  <i data-lucide="eraser"></i>
-                  <span>Clear</span>
-                </button>
-                <button id="clearLocalBtn" class="text-button danger" type="button">
-                  <i data-lucide="trash-2"></i>
-                  <span>Clear local</span>
-                </button>
-              </div>
-            </section>
-
-            <section class="workspace-panel">
-              <div class="panel-header">
-                <h2>Current Data</h2>
-                <span id="dataPreviewMeta">-</span>
-              </div>
-              <div class="table-frame">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Asset Type</th>
-                      <th>Firm</th>
-                      <th>Ticker</th>
-                      <th class="number-cell">Volume</th>
-                    </tr>
-                  </thead>
-                  <tbody id="dataPreviewBody"></tbody>
-                </table>
-              </div>
-            </section>
-          </div>
-        </section>
-
         <section id="plans" class="tab-panel">
           <div class="workspace-grid">
             <section class="workspace-panel">
@@ -244,7 +171,7 @@
                 <button type="button" data-plan-mode="combined">Current + plan</button>
               </div>
 
-              <div class="upload-actions">
+              <div class="action-row">
                 <button id="exportPlansBtn" class="text-button" type="button">
                   <i data-lucide="download"></i>
                   <span>Export plans</span>

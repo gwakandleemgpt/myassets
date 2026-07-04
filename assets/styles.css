@@ -145,7 +145,7 @@ h2 {
 
 .tabs,
 .button-row,
-.upload-actions {
+.action-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -501,11 +501,7 @@ svg {
   grid-column: 1 / -1;
 }
 
-.block-field {
-  margin-top: 14px;
-}
-
-.upload-actions {
+.action-row {
   margin: 12px 0;
 }
 
@@ -711,7 +707,7 @@ tr:last-child td {
     width: 100%;
   }
 
-  .upload-actions,
+  .action-row,
   .button-row {
     display: grid;
     grid-template-columns: 1fr;

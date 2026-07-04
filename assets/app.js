@@ -1,6 +1,5 @@
 const SOURCE_HOLDINGS = "data/portfolio-clean.csv";
 const SOURCE_PLANS = "data/portfolio-plans.csv";
-const STORAGE_KEY = "asset-monitor-data-v1";
 
 const OUTPUT_COLUMNS = ["Date", "Asset Type", "Plans?", "Securities Firm", "Ticker", "Volume"];
 const ASSET_TYPES = ["공격형 투자", "일반 투자", "미래기술 투자", "배당주", "예금", "비상금", "소비", "미분류"];
@@ -104,7 +103,6 @@ const state = {
   viewDate: "",
   planMode: "plans",
   charts: {},
-  usingLocalData: false,
 };
 
 document.addEventListener("DOMContentLoaded", init);
@@ -113,7 +111,6 @@ async function init() {
   configureChartDefaults();
   wireTabs();
   wireDashboardControls();
-  wireUploadControls();
   wirePlanControls();
   populatePlanAssetTypes();
   setDefaultPlanDate();
@@ -128,17 +125,8 @@ async function loadInitialData() {
     const [holdingsText, plansText] = await Promise.all([fetchText(SOURCE_HOLDINGS), fetchText(SOURCE_PLANS)]);
     state.baseHoldings = normalizeCsvText(holdingsText).holdings;
     state.basePlans = normalizeCsvText(plansText).plans;
-
-    const saved = loadLocalData();
-    if (saved) {
-      state.holdings = saved.holdings;
-      state.plans = saved.plans;
-      state.usingLocalData = true;
-    } else {
-      state.holdings = [...state.baseHoldings];
-      state.plans = [...state.basePlans];
-      state.usingLocalData = false;
-    }
+    state.holdings = [...state.baseHoldings];
+    state.plans = [...state.basePlans];
 
     refreshDataViews({ resetViewDate: true });
   } catch (error) {
@@ -186,47 +174,12 @@ function wireDashboardControls() {
     renderPlanWorkspace();
   });
 
-  byId("resetDataBtn").addEventListener("click", () => {
-    localStorage.removeItem(STORAGE_KEY);
-    state.holdings = [...state.baseHoldings];
-    state.plans = [...state.basePlans];
-    state.usingLocalData = false;
-    refreshDataViews({ resetViewDate: true });
-    setUploadStatus("Reset to source CSV");
+  byId("resetDataBtn").addEventListener("click", async () => {
+    await loadInitialData();
   });
 
   byId("exportHoldingsBtn").addEventListener("click", () => {
     downloadCsv("portfolio-clean.csv", state.holdings);
-  });
-}
-
-function wireUploadControls() {
-  const fileInput = byId("csvFileInput");
-  const csvInput = byId("csvInput");
-
-  byId("chooseFileBtn").addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", async () => {
-    const [file] = fileInput.files;
-    if (!file) {
-      return;
-    }
-    csvInput.value = await file.text();
-    setUploadStatus(`${file.name} loaded`);
-  });
-
-  byId("replaceDataBtn").addEventListener("click", () => applyCsvInput("replace"));
-  byId("mergeDataBtn").addEventListener("click", () => applyCsvInput("merge"));
-  byId("clearInputBtn").addEventListener("click", () => {
-    csvInput.value = "";
-    setUploadStatus("Input cleared");
-  });
-  byId("clearLocalBtn").addEventListener("click", () => {
-    localStorage.removeItem(STORAGE_KEY);
-    state.holdings = [...state.baseHoldings];
-    state.plans = [...state.basePlans];
-    state.usingLocalData = false;
-    refreshDataViews({ resetViewDate: true });
-    setUploadStatus("Local data cleared");
   });
 }
 
@@ -248,7 +201,6 @@ function wirePlanControls() {
     }
 
     state.plans = [...state.plans, plan].sort(compareRows);
-    saveLocalData();
     byId("planTicker").value = "";
     byId("planVolume").value = "";
     renderPlanWorkspace();
@@ -271,7 +223,6 @@ function wirePlanControls() {
 
   byId("clearPlansBtn").addEventListener("click", () => {
     state.plans = [];
-    saveLocalData();
     renderPlanWorkspace();
     setPlanStatus("Plans cleared");
   });
@@ -285,38 +236,6 @@ function setDefaultPlanDate() {
   byId("planDate").value = new Date().toISOString().slice(0, 10);
 }
 
-function applyCsvInput(mode) {
-  const text = byId("csvInput").value.trim();
-  if (!text) {
-    setUploadStatus("Paste or choose a CSV first");
-    return;
-  }
-
-  const parsed = normalizeCsvText(text);
-  if (parsed.errors.length) {
-    setUploadStatus(parsed.errors.slice(0, 2).join(" · "));
-    return;
-  }
-
-  if (!parsed.holdings.length && !parsed.plans.length) {
-    setUploadStatus("No usable rows found");
-    return;
-  }
-
-  if (mode === "replace" && parsed.holdings.length) {
-    state.holdings = parsed.holdings;
-    state.plans = parsed.plans.length ? parsed.plans : state.plans;
-  } else {
-    state.holdings = dedupeRows([...state.holdings, ...parsed.holdings]);
-    state.plans = [...state.plans, ...parsed.plans].sort(compareRows);
-  }
-
-  state.usingLocalData = true;
-  saveLocalData();
-  refreshDataViews({ resetViewDate: true });
-  setUploadStatus(`${mode === "replace" ? "Replaced" : "Merged"} ${parsed.holdings.length} holdings, ${parsed.plans.length} plans`);
-}
-
 function refreshDataViews({ resetViewDate = false } = {}) {
   state.holdings.sort(compareRows);
   state.plans.sort(compareRows);
@@ -328,7 +247,6 @@ function refreshDataViews({ resetViewDate = false } = {}) {
 
   syncDateControls();
   renderDashboard();
-  renderUploadPreview();
   renderPlanWorkspace();
   setStatus(statusText());
   renderIcons();
@@ -544,25 +462,6 @@ function hideThenIsolateLegendClick(_event, legendItem, legend) {
   chart.update();
 }
 
-function renderUploadPreview() {
-  const latestRows = rowsAtViewDate().slice().sort((a, b) => Number(b.Volume) - Number(a.Volume));
-  byId("dataPreviewMeta").textContent = `${state.holdings.length} rows`;
-  byId("dataPreviewBody").innerHTML = latestRows
-    .slice(0, 14)
-    .map(
-      (row) => `
-        <tr>
-          <td>${escapeHtml(row.Date)}</td>
-          <td>${escapeHtml(row["Asset Type"])}</td>
-          <td>${escapeHtml(row["Securities Firm"] || "미분류")}</td>
-          <td>${escapeHtml(row.Ticker || "-")}</td>
-          <td class="number-cell">${formatCurrency(Number(row.Volume))}</td>
-        </tr>
-      `,
-    )
-    .join("");
-}
-
 function renderPlanWorkspace() {
   const currentRows = rowsAtViewDate();
   const chartRows = state.planMode === "combined" ? [...currentRows, ...state.plans] : state.plans;
@@ -619,7 +518,6 @@ function renderPlanWorkspace() {
     button.addEventListener("click", () => {
       const removeIndex = Number(button.dataset.removePlanIndex);
       state.plans = state.plans.filter((_row, index) => index !== removeIndex);
-      saveLocalData();
       renderPlanWorkspace();
       setPlanStatus("Plan removed");
       renderIcons();
@@ -993,23 +891,6 @@ function compareRows(a, b) {
   );
 }
 
-function dedupeRows(rows) {
-  const seen = new Set();
-  const result = [];
-  rows.forEach((row) => {
-    const key = rowKey(row);
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(row);
-    }
-  });
-  return result.sort(compareRows);
-}
-
-function rowKey(row) {
-  return OUTPUT_COLUMNS.map((column) => row[column] || "").join("|");
-}
-
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -1023,31 +904,6 @@ function getField(row, names) {
 
 function canonicalHeader(header) {
   return String(header).toLowerCase().replace(/[\s_?]/g, "");
-}
-
-function saveLocalData() {
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      holdings: state.holdings,
-      plans: state.plans,
-      savedAt: new Date().toISOString(),
-    }),
-  );
-  state.usingLocalData = true;
-  setStatus(statusText());
-}
-
-function loadLocalData() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (!stored || !Array.isArray(stored.holdings) || !Array.isArray(stored.plans)) {
-      return null;
-    }
-    return stored;
-  } catch {
-    return null;
-  }
 }
 
 function downloadCsv(filename, rows) {
@@ -1085,17 +941,12 @@ function setStatus(text) {
   byId("dataStatus").textContent = text;
 }
 
-function setUploadStatus(text) {
-  byId("uploadStatus").textContent = text;
-}
-
 function setPlanStatus(text) {
   byId("planStatus").textContent = text;
 }
 
 function statusText() {
-  const source = state.usingLocalData ? "local browser data" : "source CSV";
-  return `${state.holdings.length} rows · ${state.dates.length} snapshots · ${source}`;
+  return `${state.holdings.length} rows · ${state.dates.length} snapshots · source CSV`;
 }
 
 function renderIcons() {
