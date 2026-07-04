@@ -1,7 +1,7 @@
 const SOURCE_HOLDINGS = "data/portfolio-clean.csv";
 const SOURCE_PLANS = "data/portfolio-plans.csv";
 
-const OUTPUT_COLUMNS = ["Date", "Asset Type", "Plans?", "Securities Firm", "Ticker", "Volume"];
+const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
 const ASSET_TYPES = ["공격형 투자", "일반 투자", "미래기술 투자", "배당주", "예금", "비상금", "소비", "미분류"];
 
 const EXPLICIT_ASSET_TYPE_BY_TICKER = new Map([
@@ -82,16 +82,10 @@ const FALLBACK_COLORS = [
   "#d0a7ff",
 ];
 
-const currencyFormatter = new Intl.NumberFormat("ko-KR", {
-  style: "currency",
-  currency: "KRW",
+const KRW_PER_MAN = 10000;
+const MAN_PER_EOK = 10000;
+const unitNumberFormatter = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 0,
-});
-
-const compactCurrencyFormatter = new Intl.NumberFormat("ko-KR", {
-  notation: "compact",
-  compactDisplay: "short",
-  maximumFractionDigits: 1,
 });
 
 const state = {
@@ -123,8 +117,8 @@ async function loadInitialData() {
 
   try {
     const [holdingsText, plansText] = await Promise.all([fetchText(SOURCE_HOLDINGS), fetchText(SOURCE_PLANS)]);
-    state.baseHoldings = normalizeCsvText(holdingsText).holdings;
-    state.basePlans = normalizeCsvText(plansText).plans;
+    state.baseHoldings = normalizeCsvText(holdingsText, { defaultPlan: "No" }).holdings;
+    state.basePlans = normalizeCsvText(plansText, { defaultPlan: "Yes" }).plans;
     state.holdings = [...state.baseHoldings];
     state.plans = [...state.basePlans];
 
@@ -189,7 +183,6 @@ function wirePlanControls() {
     const plan = {
       Date: byId("planDate").value,
       "Asset Type": byId("planAssetType").value,
-      "Plans?": "Yes",
       "Securities Firm": "",
       Ticker: normalizeTicker(byId("planTicker").value),
       Volume: String(Math.round(Number(byId("planVolume").value || 0))),
@@ -417,7 +410,7 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default" } = {
           grid: { color: "rgba(218, 225, 236, 0.11)" },
           ticks: {
             color: "#adb7c5",
-            callback: (value) => `₩${compactCurrencyFormatter.format(value)}`,
+            callback: (value) => formatCurrency(value),
           },
         },
       },
@@ -574,7 +567,7 @@ function configureChartDefaults() {
     "'Nanum Gothic', 'NanumGothic', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 }
 
-function normalizeCsvText(text) {
+function normalizeCsvText(text, { defaultPlan = "No" } = {}) {
   const parsed = Papa.parse(text.trim(), {
     header: true,
     skipEmptyLines: true,
@@ -583,7 +576,7 @@ function normalizeCsvText(text) {
 
   const rawRows = parsed.data.filter((row) => Object.values(row).some((value) => normalizeText(value)));
   const knownTickers = collectKnownTickers(rawRows);
-  const majorityAssetTypes = inferMajorityAssetTypes(rawRows);
+  const majorityAssetTypes = defaultPlan === "Yes" ? new Map() : inferMajorityAssetTypes(rawRows);
   const holdings = [];
   const plans = [];
   const errors = [];
@@ -601,13 +594,12 @@ function normalizeCsvText(text) {
       const normalized = {
         Date: parseDate(getField(row, ["Date"])),
         "Asset Type": normalizeAssetType(row, ticker, majorityAssetTypes, isBalanceCash),
-        "Plans?": normalizePlan(getField(row, ["Plans?", "Plans", "Plan"])),
         "Securities Firm": normalizeText(getField(row, ["Securities Firm", "Firm", "Broker"])),
         Ticker: ticker,
         Volume: String(volume),
       };
 
-      if (normalized["Plans?"] === "Yes") {
+      if (defaultPlan === "Yes") {
         plans.push(normalized);
       } else {
         holdings.push(normalized);
@@ -659,8 +651,7 @@ function inferMajorityAssetTypes(rawRows) {
   for (const row of rawRows) {
     const ticker = normalizeTicker(getField(row, ["Ticker"]));
     const assetType = normalizeAssetTypeLabel(getField(row, ["Asset Type", "AssetType", "Type"]));
-    const plan = normalizePlan(getField(row, ["Plans?", "Plans", "Plan"]));
-    if (!ticker || !assetType || plan === "Yes") {
+    if (!ticker || !assetType) {
       continue;
     }
 
@@ -741,10 +732,6 @@ function parseVolume(value) {
 
 function normalizeTicker(value) {
   return normalizeText(value).toUpperCase();
-}
-
-function normalizePlan(value) {
-  return normalizeText(value).toLowerCase() === "yes" ? "Yes" : "No";
 }
 
 function normalizeAssetTypeLabel(value) {
@@ -871,7 +858,25 @@ function borderFor(color) {
 }
 
 function formatCurrency(value) {
-  return currencyFormatter.format(Number(value || 0));
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) {
+    return "0만원";
+  }
+
+  const sign = amount < 0 ? "-" : "";
+  const roundedMan = Math.round(Math.abs(amount) / KRW_PER_MAN);
+  const eok = Math.floor(roundedMan / MAN_PER_EOK);
+  const man = roundedMan % MAN_PER_EOK;
+  const parts = [];
+
+  if (eok) {
+    parts.push(`${unitNumberFormatter.format(eok)}억`);
+  }
+  if (man || !parts.length) {
+    parts.push(`${unitNumberFormatter.format(man)}만원`);
+  }
+
+  return `${sign}${parts.join(" ")}`;
 }
 
 function formatDateLabel(isoDate) {

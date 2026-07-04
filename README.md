@@ -5,7 +5,7 @@ Static GitHub Pages dashboard for monitoring personal asset trends from CSV snap
 ## Run Locally
 
 ```powershell
-node tools/clean-data.mjs
+node tools/clean-data.mjs path\to\source-export.csv
 python -m http.server 8765 --bind 127.0.0.1
 ```
 
@@ -13,59 +13,67 @@ Open `http://127.0.0.1:8765/`.
 
 ## Repo Update Workflow
 
-Use the browser dashboard for viewing committed CSV data. Use the interactive importer when you want to add a new screenshot-derived snapshot permanently:
+Use the browser dashboard for viewing committed CSV data. Use the interactive importer when you want to add new screenshot-derived snapshots permanently:
 
-1. Give an LLM a screenshot of the asset app.
-2. Ask it to return only the CSV format below.
-3. Run:
+1. Double-click `import-paste.bat`, or run:
 
 ```powershell
-node tools/import-paste.mjs
+.\import-paste.bat
 ```
 
-4. Paste the LLM output into the terminal.
-5. Type `END` on its own line and press Enter.
+2. Paste the clipboard system prompt into the LLM chat webpage.
+3. Give the LLM one asset-app screenshot.
+4. Paste the LLM data rows into the terminal.
+5. Repeat steps 3-4 for the next screenshots.
+6. Type `DONE` on its own line after the final pasted rows.
 
-The importer normalizes the pasted rows, merges holdings into `data/portfolio-clean.csv`, merges plan rows into `data/portfolio-plans.csv`, commits those two files, and pushes the current git branch to `origin`.
+The importer accumulates the pasted batches, normalizes the rows, merges holdings into `data/portfolio-clean.csv`, commits the CSV data files, and pushes the current git branch to `origin`.
 
 Useful checks:
 
 ```powershell
+node tools/import-paste.mjs --prompt-only
 node tools/import-paste.mjs --dry-run
 node tools/import-paste.mjs --no-push
 node tools/import-paste.mjs snapshot.csv --no-commit
 ```
 
+Interactive commands:
+
+- `END`: optional legacy command; no longer needed.
+- `DONE`: import all pasted rows.
+- `PROMPT`: copy the LLM system prompt to your clipboard again and print it as a fallback.
+- `ABORT`: quit without writing files.
+
 ## LLM Output Format
 
-Ask the LLM to return only one fenced CSV block:
+The tool copies a complete system prompt to your clipboard at launch, then prints it as a fallback. Its core instruction is that the LLM should return only plain CSV data rows per screenshot:
 
 ```text
-Return only a CSV code block. Use this exact header:
-Date,Asset Type,Plans?,Securities Firm,Ticker,Volume
+Return only CSV data rows. Do not include a header. Use this column order:
+Date,Asset Type,Securities Firm,Ticker,Volume
 
 Rules:
 - Use YYYY-MM-DD for Date on every row.
 - Use one of these Asset Type values when possible: 공격형 투자, 일반 투자, 미래기술 투자, 배당주, 예금, 비상금, 소비, 미분류.
-- Use Plans? = No for current holdings and Plans? = Yes for future-plan rows.
+- Extract only actual/current holdings. Do not output future plans, target plans, or a Plans? column.
+- Treat `키움저축은행`, `우리은행`, and `예수금` rows as `예금` with an empty `Ticker`.
 - Use an empty Ticker for cash/deposit rows.
 - Use integer KRW Volume values. If commas are included, quote the value.
-- Do not include commentary before or after the CSV block.
+- Do not include commentary before or after the rows.
 ```
 
 Example:
 
 ```csv
-Date,Asset Type,Plans?,Securities Firm,Ticker,Volume
-2026-07-04,일반 투자,No,키움증권,AMD,1234567
-2026-07-04,예금,No,카카오뱅크,,20000000
-2026-07-04,배당주,Yes,,SCHD,5000000
+2026-07-04,일반 투자,키움증권,AMD,1234567
+2026-07-04,예금,카카오뱅크,,20000000
+2026-07-04,배당주,,SCHD,5000000
 ```
 
 Notes:
 
-- `Plans? = Yes` is stored in the Future Plan dataset.
-- `Plans? = No` is stored as actual holding data.
+- Pasted LLM rows are imported as actual holding data.
 - `Name` is optional for older exports; if present and starts with `잔고`, the row is treated as `예금`.
 - If `Asset Type` is omitted for a known ticker, the importer reuses that ticker's existing asset type history.
 
@@ -74,19 +82,20 @@ Notes:
 The full source CSV cleaner remains available:
 
 ```powershell
-node tools/clean-data.mjs
+node tools/clean-data.mjs path\to\source-export.csv
 ```
 
 It produces:
 
 - `data/portfolio-clean.csv`: actual holdings used by the dashboard
-- `data/portfolio-plans.csv`: historical `Plans? = Yes` rows used by the Future Plan tab
+- `data/portfolio-plans.csv`: plan rows used by the Future Plan tab
 
 Cleaning rules:
 
 - Drops `Name`
 - Skips rows without `Volume`
-- Splits `Plans? = Yes` rows into plan history
+- Splits source rows with `Plans? = Yes` into `data/portfolio-plans.csv`
+- Writes split output files without a `Plans?` column
 - Normalizes dates to `YYYY-MM-DD`
 - Normalizes volumes to plain numbers
 - Sets `AMDL`, `GGLL`, and `AMD3` to `공격형 투자`
@@ -95,4 +104,4 @@ Cleaning rules:
 
 ## GitHub Pages
 
-GitHub Pages is static, so the site itself does not write back into the repository. Permanent updates go through `tools/import-paste.mjs`, which waits for pasted input in the terminal, edits the repo CSVs, and pushes them with git.
+GitHub Pages is static, so the site itself does not write back into the repository. Permanent updates go through `tools/import-paste.mjs`, which copies/prints the LLM prompt, waits for pasted input batches in the terminal, edits the repo CSVs, and pushes them with git.

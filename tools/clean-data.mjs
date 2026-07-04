@@ -2,14 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const inputFile =
-  process.argv[2] ||
-  fs
-    .readdirSync(root)
-    .find((name) => name.toLowerCase().endsWith(".csv") && !name.startsWith("portfolio-"));
+const inputFile = process.argv[2];
 
 if (!inputFile) {
-  throw new Error("No CSV file found. Pass a source CSV path as the first argument.");
+  throw new Error("Pass a source CSV path as the first argument.");
 }
 
 const inputPath = path.resolve(root, inputFile);
@@ -39,7 +35,7 @@ const fallbackAssetTypeByTicker = new Map([
 ]);
 
 const bankLikeFirms = new Set(["카카오뱅크", "키움저축은행", "우리은행"]);
-const outputColumns = ["Date", "Asset Type", "Plans?", "Securities Firm", "Ticker", "Volume"];
+const outputColumns = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
 
 const sourceText = fs.readFileSync(inputPath, "utf8").replace(/^\uFEFF/, "");
 const sourceRows = parseCsv(sourceText);
@@ -63,7 +59,6 @@ for (const row of sourceRows) {
   const normalized = {
     Date: parseDate(row.Date),
     "Asset Type": assetType,
-    "Plans?": isPlan ? "Yes" : "No",
     "Securities Firm": normalizeText(row["Securities Firm"]),
     Ticker: inferredTicker,
     Volume: String(volume),

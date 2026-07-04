@@ -10,7 +10,7 @@ const dataDir = path.join(repoRoot, "data");
 const holdingsPath = path.join(dataDir, "portfolio-clean.csv");
 const plansPath = path.join(dataDir, "portfolio-plans.csv");
 
-const OUTPUT_COLUMNS = ["Date", "Asset Type", "Plans?", "Securities Firm", "Ticker", "Volume"];
+const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
 const CASH_ASSET_TYPE = "예금";
 const UNCLASSIFIED_ASSET_TYPE = "미분류";
 const BALANCE_PREFIX = "잔고";
@@ -26,32 +26,34 @@ async function main() {
     printHelp();
     return;
   }
-
-  const inputText = await readInput(options);
-  const csvText = extractCsvText(inputText);
-  if (!csvText.trim()) {
-    throw new Error("No CSV text was pasted.");
+  if (options.promptOnly) {
+    printSystemPrompt();
+    return;
   }
 
   const existingHoldings = normalizeStoredRows(readCsvFile(holdingsPath));
   const existingPlans = normalizeStoredRows(readCsvFile(plansPath));
-  const rawInputRows = parseCsv(csvText);
-  const context = buildNormalizationContext([...existingHoldings, ...existingPlans], rawInputRows);
+  const inputText = await readInput(options);
+  const rawInputRows = parseInputRows(inputText);
+  if (!rawInputRows.length) {
+    throw new Error("No CSV rows were pasted.");
+  }
+
+  const context = buildNormalizationContext(existingHoldings, rawInputRows);
   const incoming = normalizeIncomingRows(rawInputRows, options, context);
 
-  if (!incoming.holdings.length && !incoming.plans.length) {
-    throw new Error("No usable holding or plan rows found.");
+  if (!incoming.holdings.length) {
+    throw new Error("No usable holding rows found.");
   }
 
   const holdingsMerge = mergeHoldings(existingHoldings, incoming.holdings);
-  const plansMerge = mergePlans(existingPlans, incoming.plans);
   const nextHoldingsText = toCsv(holdingsMerge.rows, OUTPUT_COLUMNS);
-  const nextPlansText = toCsv(plansMerge.rows, OUTPUT_COLUMNS);
+  const nextPlansText = toCsv(existingPlans, OUTPUT_COLUMNS);
   const holdingsChanged = normalizeFileText(holdingsPath) !== nextHoldingsText;
   const plansChanged = normalizeFileText(plansPath) !== nextPlansText;
   const hasChanges = holdingsChanged || plansChanged;
 
-  printSummary(incoming, holdingsMerge.stats, plansMerge.stats, { holdingsChanged, plansChanged });
+  printSummary(incoming, holdingsMerge.stats, { holdingsChanged, plansChanged });
 
   if (options.dryRun) {
     console.log("Dry run only. No files were written.");
@@ -84,6 +86,7 @@ function parseArgs(argv) {
     help: false,
     inputFile: "",
     message: "",
+    promptOnly: false,
     push: true,
   };
 
@@ -102,6 +105,10 @@ function parseArgs(argv) {
       options.date = requireValue(argv, (index += 1), arg);
     } else if (arg === "--message" || arg === "-m") {
       options.message = requireValue(argv, (index += 1), arg);
+    } else if (arg === "--prompt-only") {
+      options.promptOnly = true;
+      options.commit = false;
+      options.push = false;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else if (arg.startsWith("--")) {
@@ -133,19 +140,41 @@ async function readInput(options) {
     return readAllStdin();
   }
 
-  console.log("Paste the LLM CSV output now.");
-  console.log("Type END on its own line when you are done, then press Enter.");
+  return readInteractiveInput();
+}
+
+async function readInteractiveInput() {
+  printSystemPrompt();
+  console.log("");
+  console.log("Paste the clipboard prompt into the LLM chat, then keep pasting LLM data rows below.");
+  console.log("Commands: DONE = import all pasted rows, PROMPT = copy/show prompt again, ABORT = quit.");
   console.log("");
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const lines = [];
   for await (const line of rl) {
-    if (line.trim() === "END") {
+    const command = line.trim().toUpperCase();
+    if (command === "PROMPT") {
+      printSystemPrompt();
+      console.log("");
+      continue;
+    }
+    if (command === "ABORT") {
+      rl.close();
+      throw new Error("Interactive import aborted.");
+    }
+    if (command === "DONE") {
       rl.close();
       break;
     }
+    if (command === "END") {
+      console.log("END is no longer needed. Keep pasting data rows, then type DONE once when finished.");
+      console.log("");
+      continue;
+    }
     lines.push(line);
   }
+
   return lines.join("\n");
 }
 
@@ -156,6 +185,25 @@ async function readAllStdin() {
     text += chunk;
   }
   return text;
+}
+
+function parseInputRows(inputText) {
+  return extractCsvTexts(inputText).flatMap((csvText) => parseCsv(csvText));
+}
+
+function extractCsvTexts(inputText) {
+  const text = String(inputText ?? "").replace(/^\uFEFF/, "").trim();
+  if (!text) {
+    return [];
+  }
+
+  const fenced = [...text.matchAll(/```(?:csv)?\s*([\s\S]*?)```/gi)].map((match) => match[1].trim()).filter(Boolean);
+  if (fenced.length) {
+    return fenced;
+  }
+
+  const csvText = extractCsvText(text);
+  return csvText.trim() ? [csvText] : [];
 }
 
 function extractCsvText(inputText) {
@@ -192,6 +240,11 @@ function isCsvHeaderLine(line) {
   return line.includes(",") && canonical.includes("date") && canonical.includes("volume");
 }
 
+function isCsvHeaderRow(row) {
+  const canonical = row.map(canonicalHeader);
+  return canonical.includes("date") && canonical.includes("volume");
+}
+
 function readCsvFile(filePath) {
   if (!fs.existsSync(filePath)) {
     return [];
@@ -220,7 +273,6 @@ function buildNormalizationContext(existingRows, rawInputRows) {
 
 function normalizeIncomingRows(rawRows, options, context) {
   const holdings = [];
-  const plans = [];
   const errors = [];
 
   rawRows.forEach((row, index) => {
@@ -242,17 +294,12 @@ function normalizeIncomingRows(rawRows, options, context) {
       const normalized = {
         Date: parseDate(getField(row, ["Date", "Snapshot Date"]) || options.date),
         "Asset Type": normalizeAssetType(row, ticker, context.assetTypeByTicker, isBalanceCash),
-        "Plans?": normalizePlan(getField(row, ["Plans?", "Plans", "Plan"])),
         "Securities Firm": normalizeText(getField(row, ["Securities Firm", "Firm", "Broker"])),
         Ticker: ticker,
         Volume: String(volume),
       };
 
-      if (normalized["Plans?"] === "Yes") {
-        plans.push(normalized);
-      } else {
-        holdings.push(normalized);
-      }
+      holdings.push(normalized);
     } catch (error) {
       errors.push(`Row ${index + 2}: ${error.message}`);
     }
@@ -264,8 +311,7 @@ function normalizeIncomingRows(rawRows, options, context) {
 
   return {
     holdings: holdings.sort(compareRows),
-    plans: plans.sort(compareRows),
-    latestDate: [...holdings, ...plans].map((row) => row.Date).sort().at(-1) || "",
+    latestDate: holdings.map((row) => row.Date).sort().at(-1) || "",
   };
 }
 
@@ -292,7 +338,7 @@ function inferMajorityAssetTypes(rows) {
   for (const row of rows) {
     const ticker = normalizeTicker(row.Ticker);
     const assetType = normalizeText(row["Asset Type"]);
-    if (!ticker || !assetType || normalizePlan(row["Plans?"]) === "Yes") {
+    if (!ticker || !assetType) {
       continue;
     }
 
@@ -372,27 +418,8 @@ function mergeHoldings(existingRows, incomingRows) {
   return { rows: rows.sort(compareRows), stats };
 }
 
-function mergePlans(existingRows, incomingRows) {
-  const rows = existingRows.map(cloneRow);
-  const existingKeys = new Set(rows.map(fullRowKey));
-  const stats = { added: 0, updated: 0, unchanged: 0 };
-
-  for (const row of incomingRows) {
-    const key = fullRowKey(row);
-    if (existingKeys.has(key)) {
-      stats.unchanged += 1;
-      continue;
-    }
-    existingKeys.add(key);
-    rows.push(cloneRow(row));
-    stats.added += 1;
-  }
-
-  return { rows: rows.sort(compareRows), stats };
-}
-
 function holdingMergeKey(row) {
-  return [row.Date, row["Plans?"], row["Securities Firm"], row.Ticker, row["Asset Type"]].join("|");
+  return [row.Date, row["Securities Firm"], row.Ticker, row["Asset Type"]].join("|");
 }
 
 function fullRowKey(row) {
@@ -450,15 +477,170 @@ function normalizeFileText(filePath) {
   return fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
 }
 
-function printSummary(incoming, holdingStats, planStats, changes) {
-  console.log(`Parsed ${incoming.holdings.length} holding rows and ${incoming.plans.length} plan rows.`);
+function printSummary(incoming, holdingStats, changes) {
+  console.log(`Parsed ${incoming.holdings.length} holding rows.`);
   console.log(
     `Holdings merge: ${holdingStats.added} added, ${holdingStats.updated} updated, ${holdingStats.unchanged} unchanged.`,
   );
-  console.log(`Plans merge: ${planStats.added} added, ${planStats.unchanged} unchanged.`);
   console.log(
     `CSV changes: holdings ${changes.holdingsChanged ? "yes" : "no"}, plans ${changes.plansChanged ? "yes" : "no"}.`,
   );
+}
+
+function printSystemPrompt() {
+  const prompt = buildSystemPrompt();
+  const clipboard = copyTextToClipboard(prompt);
+  if (clipboard.ok) {
+    console.log(`Copied the LLM system prompt to your clipboard via ${clipboard.method}.`);
+  } else {
+    console.log(`Could not copy the LLM system prompt to your clipboard: ${clipboard.message}`);
+  }
+  console.log("========== LLM SYSTEM PROMPT ==========");
+  console.log(prompt);
+  console.log("========== END SYSTEM PROMPT ==========");
+}
+
+function copyTextToClipboard(text) {
+  const failures = [];
+  for (const command of clipboardCommands()) {
+    const result = spawnSync(command.file, command.args, {
+      input: text,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+
+    if (!result.error && result.status === 0) {
+      return { ok: true, method: command.name };
+    }
+
+    failures.push(formatClipboardFailure(command, result));
+  }
+
+  return { ok: false, message: failures[0] || "no clipboard command is available" };
+}
+
+function clipboardCommands() {
+  if (process.platform === "win32") {
+    const script = [
+      "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)",
+      "$text = [Console]::In.ReadToEnd()",
+      "Set-Clipboard -Value $text",
+    ].join("; ");
+    const encodedScript = Buffer.from(script, "utf16le").toString("base64");
+    return [
+      {
+        name: "PowerShell Set-Clipboard",
+        file: "powershell.exe",
+        args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedScript],
+      },
+      { name: "clip.exe", file: "clip.exe", args: [] },
+    ];
+  }
+
+  if (process.platform === "darwin") {
+    return [{ name: "pbcopy", file: "pbcopy", args: [] }];
+  }
+
+  return [
+    { name: "wl-copy", file: "wl-copy", args: [] },
+    { name: "xclip", file: "xclip", args: ["-selection", "clipboard"] },
+    { name: "xsel", file: "xsel", args: ["--clipboard", "--input"] },
+  ];
+}
+
+function formatClipboardFailure(command, result) {
+  if (result.error) {
+    return `${command.name}: ${result.error.message}`;
+  }
+  const stderr = String(result.stderr || "").trim();
+  return `${command.name}: exit ${result.status}${stderr ? ` (${stderr})` : ""}`;
+}
+
+function buildSystemPrompt() {
+  const holdings = normalizeStoredRows(readCsvFile(holdingsPath));
+  const rows = [...holdings, ...normalizeStoredRows(readCsvFile(plansPath))];
+  const assetTypes = sortedUnique([...rows.map((row) => row["Asset Type"]), CASH_ASSET_TYPE, UNCLASSIFIED_ASSET_TYPE]);
+  const firms = sortedUnique(rows.map((row) => row["Securities Firm"]));
+  const tickerGroups = groupTickersByAssetType(holdings);
+  const tickerLines = tickerGroups.length
+    ? tickerGroups.map(([assetType, tickers]) => `- ${assetType}: ${tickers.join(", ")}`).join("\n")
+    : "- No known tickers yet.";
+
+  return `You are a strict portfolio screenshot data extraction engine.
+
+Your job:
+- Read one asset-app screenshot at a time.
+- Output ONLY plain CSV data rows for that screenshot.
+- Do not output a CSV header.
+- Do not wrap the rows in a markdown code fence.
+- Do not include explanations, notes, markdown, or guessed values.
+
+Column order for every row, exactly:
+Date,Asset Type,Securities Firm,Ticker,Volume
+
+Date rules:
+- Use YYYY-MM-DD.
+- If the user provides a snapshot date, use that date for every row.
+- If no date is visible and the user did not provide one, ask for the date instead of producing CSV.
+
+Screenshot scope:
+- Extract only actual/current holdings.
+- Do not output future plans, target plans, or a Plans? column.
+
+Allowed Asset Type values:
+${assetTypes.map((assetType) => `- ${assetType}`).join("\n")}
+
+Known ticker mapping:
+${tickerLines}
+
+Known securities firms/banks:
+${firms.map((firm) => `- ${firm}`).join("\n")}
+
+예금 classification rules:
+- 키움저축은행 rows are always Asset Type = 예금 and Ticker empty.
+- 우리은행 rows are always Asset Type = 예금 and Ticker empty.
+- 예수금 rows are always Asset Type = 예금 and Ticker empty.
+
+Ticker rules:
+- Use uppercase ticker symbols.
+- For cash, deposits, bank balance, emergency fund, or consumption rows, leave Ticker empty.
+- If a ticker is clearly visible but not listed above, output it exactly and use Asset Type = ${UNCLASSIFIED_ASSET_TYPE} unless the screenshot clearly implies another asset type.
+- Do not invent tickers.
+
+Volume rules:
+- Volume must be an integer KRW amount.
+- Remove currency symbols and spaces.
+- If using commas inside a number, quote the field, e.g. "1,234,567".
+- Do not output percentages, shares, prices, purchase price, profit/loss, or daily change unless the screenshot clearly labels them as total current value/asset value.
+
+Output format:
+2026-07-04,일반 투자,키움증권,AMD,1234567
+2026-07-04,예금,카카오뱅크,,20000000
+2026-07-04,배당주,삼성증권,SCHD,5000000`;
+}
+
+function groupTickersByAssetType(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const ticker = normalizeTicker(row.Ticker);
+    const assetType = normalizeText(row["Asset Type"]);
+    if (!ticker || !assetType) {
+      continue;
+    }
+    if (!groups.has(assetType)) {
+      groups.set(assetType, new Set());
+    }
+    groups.get(assetType).add(ticker);
+  }
+
+  return [...groups.entries()]
+    .map(([assetType, tickers]) => [assetType, [...tickers].sort((a, b) => a.localeCompare(b, "ko"))])
+    .sort((a, b) => a[0].localeCompare(b[0], "ko"));
+}
+
+function sortedUnique(values) {
+  return [...new Set(values.map(normalizeText).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
 }
 
 function parseDate(value) {
@@ -521,11 +703,6 @@ function parseVolume(value) {
 
 function normalizeTicker(value) {
   return normalizeText(value).toUpperCase();
-}
-
-function normalizePlan(value) {
-  const normalized = normalizeText(value).toLowerCase();
-  return ["yes", "y", "true", "1", "plan", "planned"].includes(normalized) ? "Yes" : "No";
 }
 
 function normalizeText(value) {
@@ -603,12 +780,16 @@ function parseCsv(text) {
     rows.push(row);
   }
 
-  const [headers, ...dataRows] = rows.filter((entry) => entry.some((value) => normalizeText(value)));
-  if (!headers) {
+  const nonEmptyRows = rows.filter((entry) => entry.some((value) => normalizeText(value)));
+  if (!nonEmptyRows.length) {
     return [];
   }
 
-  const normalizedHeaders = headers.map((header) => normalizeText(header).replace(/^\uFEFF/, ""));
+  const hasHeader = isCsvHeaderRow(nonEmptyRows[0]);
+  const normalizedHeaders = hasHeader
+    ? nonEmptyRows[0].map((header) => normalizeText(header).replace(/^\uFEFF/, ""))
+    : OUTPUT_COLUMNS;
+  const dataRows = hasHeader ? nonEmptyRows.slice(1) : nonEmptyRows;
   return dataRows.map((entry) => Object.fromEntries(normalizedHeaders.map((header, index) => [header, entry[index] ?? ""])));
 }
 
@@ -629,22 +810,26 @@ function printHelp() {
   console.log(`Usage:
   node tools/import-paste.mjs
   node tools/import-paste.mjs --dry-run
+  node tools/import-paste.mjs --prompt-only
   node tools/import-paste.mjs snapshot.csv --no-push
 
 Interactive input:
-  Paste the LLM CSV output into the terminal.
-  Type END on its own line when finished.
+  The tool copies the LLM system prompt to your clipboard first, then prints it as a fallback.
+  Paste each image's LLM data rows into the terminal.
+  Keep pasting rows from more screenshots as you go.
+  Type DONE on its own line once, after the final pasted rows, to import.
+  Type PROMPT on its own line to copy and show the system prompt again.
 
 Expected LLM output:
-Date,Asset Type,Plans?,Securities Firm,Ticker,Volume
-2026-07-04,일반 투자,No,키움증권,AMD,1234567
-2026-07-04,예금,No,카카오뱅크,,20000000
+2026-07-04,일반 투자,키움증권,AMD,1234567
+2026-07-04,예금,카카오뱅크,,20000000
 
 Options:
   --date YYYY-MM-DD  Use this date when a pasted row omits Date.
   --dry-run          Parse and merge, but do not write, commit, or push.
   --no-commit        Write CSV files, but do not commit or push.
   --no-push          Commit CSV files, but do not push.
+  --prompt-only      Copy and print the LLM system prompt, then exit.
   -m, --message MSG  Override the git commit message.
 `);
 }
