@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Asset Monitor</title>
+    <link rel="stylesheet" href="assets/styles.css?v=20260704h" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="assets/app.js?v=20260704h" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <p class="eyebrow">Personal Portfolio</p>
+          <h1>Asset Monitor</h1>
+          <p id="dataStatus" class="data-status">Loading data...</p>
+        </div>
+
+        <nav class="tabs" aria-label="Primary views">
+          <button class="tab-button is-active" type="button" data-tab="dashboard" aria-selected="true">
+            <i data-lucide="chart-pie"></i>
+            <span>Dashboard</span>
+          </button>
+          <button class="tab-button" type="button" data-tab="upload" aria-selected="false">
+            <i data-lucide="upload"></i>
+            <span>Upload</span>
+          </button>
+          <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
+            <i data-lucide="list-plus"></i>
+            <span>Future Plan</span>
+          </button>
+        </nav>
+      </header>
+
+      <main>
+        <section id="dashboard" class="tab-panel is-active">
+          <div class="control-band">
+            <label class="field field-date" for="dateSelect">
+              <span>View date</span>
+              <select id="dateSelect"></select>
+            </label>
+            <input id="dateSlider" class="date-slider" type="range" min="0" value="0" />
+            <div class="button-row">
+              <button id="resetDataBtn" class="icon-button" type="button" title="Reset to source CSV">
+                <i data-lucide="refresh-ccw"></i>
+              </button>
+              <button id="exportHoldingsBtn" class="text-button" type="button">
+                <i data-lucide="download"></i>
+                <span>Export data</span>
+              </button>
+            </div>
+          </div>
+
+          <section class="metric-strip" aria-label="Portfolio summary">
+            <div class="metric">
+              <span>Total volume</span>
+              <strong id="metricTotal">-</strong>
+            </div>
+            <div class="metric">
+              <span>Investment volume</span>
+              <strong id="metricInvestment">-</strong>
+            </div>
+            <div class="metric">
+              <span>Tickers</span>
+              <strong id="metricTickers">-</strong>
+            </div>
+            <div class="metric">
+              <span>Latest source date</span>
+              <strong id="metricLatest">-</strong>
+            </div>
+          </section>
+
+          <section class="chart-grid" aria-label="Portfolio charts">
+            <article class="chart-panel pie-panel">
+              <header class="panel-header">
+                <h2>Asset Distribution</h2>
+                <span id="assetDistributionMeta"></span>
+              </header>
+              <div class="pie-frame">
+                <canvas id="assetDistributionChart"></canvas>
+                <div id="assetDistributionCenter" class="donut-center"></div>
+              </div>
+            </article>
+
+            <article class="chart-panel pie-panel">
+              <header class="panel-header">
+                <h2>Portfolio</h2>
+                <span id="portfolioMeta"></span>
+              </header>
+              <div class="pie-frame">
+                <canvas id="portfolioChart"></canvas>
+                <div id="portfolioCenter" class="donut-center"></div>
+              </div>
+            </article>
+
+            <article class="chart-panel pie-panel">
+              <header class="panel-header">
+                <h2>Securities Firm</h2>
+                <span id="firmMeta"></span>
+              </header>
+              <div class="pie-frame">
+                <canvas id="firmChart"></canvas>
+                <div id="firmCenter" class="donut-center"></div>
+              </div>
+            </article>
+
+            <article class="chart-panel line-panel">
+              <header class="panel-header">
+                <h2>Asset Trend</h2>
+                <span>Monthly chunks</span>
+              </header>
+              <div class="line-frame">
+                <canvas id="assetTrendChart"></canvas>
+              </div>
+            </article>
+
+            <article class="chart-panel line-panel">
+              <header class="panel-header">
+                <h2>Investment Trend</h2>
+                <span>Ticker rows only</span>
+              </header>
+              <div class="line-frame">
+                <canvas id="investmentTrendChart"></canvas>
+              </div>
+            </article>
+
+            <article class="chart-panel line-panel wide">
+              <header class="panel-header">
+                <h2>Value Trend</h2>
+                <span>Individual tickers</span>
+              </header>
+              <div class="line-frame tall">
+                <canvas id="valueTrendChart"></canvas>
+              </div>
+            </article>
+          </section>
+        </section>
+
+        <section id="upload" class="tab-panel">
+          <div class="workspace-grid">
+            <section class="workspace-panel">
+              <div class="panel-header">
+                <h2>Upload Data</h2>
+                <span id="uploadStatus">Ready</span>
+              </div>
+
+              <div class="upload-actions">
+                <button id="chooseFileBtn" class="text-button" type="button">
+                  <i data-lucide="file-up"></i>
+                  <span>CSV file</span>
+                </button>
+                <input id="csvFileInput" type="file" accept=".csv,text/csv" hidden />
+                <button id="replaceDataBtn" class="text-button primary" type="button">
+                  <i data-lucide="replace"></i>
+                  <span>Replace</span>
+                </button>
+                <button id="mergeDataBtn" class="text-button" type="button">
+                  <i data-lucide="git-merge"></i>
+                  <span>Merge</span>
+                </button>
+              </div>
+
+              <label class="field block-field" for="csvInput">
+                <span>Paste CSV</span>
+                <textarea
+                  id="csvInput"
+                  rows="12"
+                  spellcheck="false"
+                  placeholder="Date,Asset Type,Plans?,Securities Firm,Ticker,Volume"
+                ></textarea>
+              </label>
+
+              <div class="upload-actions">
+                <button id="clearInputBtn" class="text-button" type="button">
+                  <i data-lucide="eraser"></i>
+                  <span>Clear</span>
+                </button>
+                <button id="clearLocalBtn" class="text-button danger" type="button">
+                  <i data-lucide="trash-2"></i>
+                  <span>Clear local</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="workspace-panel">
+              <div class="panel-header">
+                <h2>Current Data</h2>
+                <span id="dataPreviewMeta">-</span>
+              </div>
+              <div class="table-frame">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Asset Type</th>
+                      <th>Firm</th>
+                      <th>Ticker</th>
+                      <th class="number-cell">Volume</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dataPreviewBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="plans" class="tab-panel">
+          <div class="workspace-grid">
+            <section class="workspace-panel">
+              <div class="panel-header">
+                <h2>Plan Entry</h2>
+                <span id="planStatus">Historical plans loaded</span>
+              </div>
+
+              <form id="planForm" class="plan-form">
+                <label class="field" for="planDate">
+                  <span>Date</span>
+                  <input id="planDate" type="date" required />
+                </label>
+                <label class="field" for="planTicker">
+                  <span>Ticker</span>
+                  <input id="planTicker" type="text" autocomplete="off" />
+                </label>
+                <label class="field" for="planAssetType">
+                  <span>Asset type</span>
+                  <select id="planAssetType"></select>
+                </label>
+                <label class="field" for="planVolume">
+                  <span>Volume</span>
+                  <input id="planVolume" type="number" min="0" step="1" required />
+                </label>
+                <button class="text-button primary" type="submit">
+                  <i data-lucide="plus"></i>
+                  <span>Add plan</span>
+                </button>
+              </form>
+
+              <div class="segmented" role="group" aria-label="Plan chart mode">
+                <button class="is-active" type="button" data-plan-mode="plans">Plan only</button>
+                <button type="button" data-plan-mode="combined">Current + plan</button>
+              </div>
+
+              <div class="upload-actions">
+                <button id="exportPlansBtn" class="text-button" type="button">
+                  <i data-lucide="download"></i>
+                  <span>Export plans</span>
+                </button>
+                <button id="clearPlansBtn" class="text-button danger" type="button">
+                  <i data-lucide="trash-2"></i>
+                  <span>Clear plans</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="workspace-panel">
+              <div class="panel-header">
+                <h2>Mock Asset Distribution</h2>
+                <span id="planChartMeta">-</span>
+              </div>
+              <div class="pie-frame plan-pie">
+                <canvas id="planChart"></canvas>
+                <div id="planCenter" class="donut-center"></div>
+              </div>
+            </section>
+
+            <section class="workspace-panel wide-workspace">
+              <div class="panel-header">
+                <h2>Plan History</h2>
+                <span id="planTableMeta">-</span>
+              </div>
+              <div class="table-frame plan-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Asset Type</th>
+                      <th>Ticker</th>
+                      <th class="number-cell">Volume</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="planTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
