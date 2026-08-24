@@ -330,6 +330,32 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .panel-kicker { margin-bottom: 5px; color: var(--muted-soft); font-size: 0.64rem; font-weight: 780; letter-spacing: 0.1em; text-transform: uppercase; }
 .panel-header > span { max-width: 46%; color: var(--muted); font-size: 0.7rem; font-weight: 680; line-height: 1.35; text-align: right; }
 
+.performance-readout {
+  display: grid;
+  justify-items: end;
+  text-align: right;
+}
+
+.performance-readout > span {
+  color: var(--muted-soft);
+  font-size: 0.62rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.performance-readout strong {
+  margin-top: 3px;
+  color: var(--ink-strong);
+  font-size: 1rem;
+  font-weight: 790;
+  letter-spacing: -0.035em;
+}
+
+.performance-readout strong.is-positive { color: var(--green); }
+.performance-readout strong.is-negative { color: var(--danger); }
+.performance-readout small { margin-top: 2px; color: var(--muted); font-size: 0.66rem; font-weight: 650; }
+
 .pie-frame, .line-frame { position: relative; width: 100%; }
 .pie-frame { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 11px; height: 320px; }
 .pie-panel .pie-frame, .pie-workspace-panel .pie-frame { margin-block: auto; }
@@ -338,6 +364,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .line-frame { height: 330px; }
 .hero-line-frame { height: 388px; }
 .line-frame.tall { height: 420px; }
+
+.capital-baseline-note {
+  margin-top: 9px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+  color: var(--muted-soft);
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
 
 .donut-center {
   position: absolute;
@@ -463,6 +498,7 @@ tr:last-child td { border-bottom: 0; }
   .pie-frame, .plan-pie { height: 300px; }
   .panel-header { gap: 10px; }
   .panel-header > span { max-width: 50%; }
+  .performance-readout { justify-items: start; text-align: left; }
   .section-divider { align-items: start; flex-direction: column; gap: 6px; padding-top: 28px; }
   .plan-target-grid { grid-template-columns: 1fr; }
   .plan-editor-panel, .plan-target-panel { min-height: 0; }

@@ -24,6 +24,10 @@ let FALLBACK_COLORS = [
 
 const KRW_PER_MAN = 10000;
 const MAN_PER_EOK = 10000;
+const CAPITAL_ANCHOR_DATE = "2025-03-28";
+const EARLY_MONTHLY_INCOME = 1550000;
+const MAY_2026_INCOME = 2250000;
+const CURRENT_MONTHLY_INCOME = 4200000;
 const DOUGHNUT_SCALE_ANIMATION_DURATION = 420;
 const DOUGHNUT_ROTATE_ANIMATION_DURATION = 520;
 const LINE_POINT_ANIMATION_DURATION = 620;
@@ -45,6 +49,7 @@ const state = {
   viewDate: "",
   charts: {},
   suppressLineAnimations: false,
+  lineAnimationGraceUntil: 0,
   resizeAnimationTimer: 0,
 };
 
@@ -185,11 +190,14 @@ function wireResizeAnimationGuard() {
 }
 
 function suppressLineAnimationsForResize() {
+  const lineCharts = Object.values(state.charts).filter((chart) => chart.config.type === "line");
+  if (!lineCharts.length || performance.now() < state.lineAnimationGraceUntil) {
+    return;
+  }
+
   state.suppressLineAnimations = true;
-  Object.values(state.charts).forEach((chart) => {
-    if (chart.config.type === "line") {
-      chart.stop();
-    }
+  lineCharts.forEach((chart) => {
+    chart.stop();
   });
 
   window.clearTimeout(state.resizeAnimationTimer);
@@ -365,9 +373,7 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   byId("metricChange").classList.toggle("is-negative", totalChange < 0);
 
   renderPortfolioSignals(rows, total);
-  byId("assetTrendMeta").textContent = state.dates.length
-    ? `${state.dates.length} snapshots · ${formatShortDateLabel(state.dates[0])} → ${formatShortDateLabel(state.dates[state.dates.length - 1])}`
-    : "No history";
+  renderCapitalPerformance(total);
 
   renderAssetDistributionChart({
     chartId: "assetDistributionChart",
@@ -422,6 +428,79 @@ function renderPortfolioSignals(rows, total) {
   byId("insightInstitutionsMeta").textContent = largestFirmValue
     ? `${largestFirm} holds ${formatPercentOf(largestFirmValue, total)}`
     : "No institution data";
+}
+
+function renderCapitalPerformance(actualTotal) {
+  const baseline = buildCapitalBaseline();
+  const baselinePoint = baseline.points.find((point) => point.date === state.viewDate);
+  const resultNode = byId("investmentResult");
+
+  if (!baselinePoint) {
+    resultNode.textContent = "—";
+    resultNode.classList.remove("is-positive", "is-negative");
+    byId("assetTrendMeta").textContent = baseline.anchorObservation
+      ? `Available from ${formatShortDateLabel(baseline.anchorObservation.date)}`
+      : "Waiting for an anchor snapshot";
+  } else {
+    const result = actualTotal - baselinePoint.value;
+    const resultPercent = baselinePoint.value ? (result / baselinePoint.value) * 100 : 0;
+    resultNode.textContent = formatSignedCurrency(result);
+    resultNode.classList.toggle("is-positive", result > 0);
+    resultNode.classList.toggle("is-negative", result < 0);
+    byId("assetTrendMeta").textContent = `${formatSignedPercent(resultPercent)} vs capital baseline`;
+  }
+
+  byId("capitalBaselineNote").textContent = baseline.anchorObservation
+    ? `Capital baseline starts at the ${formatDateLabel(baseline.anchorObservation.date)} portfolio snapshot, including that day's income. It then adds 155만원 on each 28th from April 2025 through April 2026, 225만원 in May 2026, and 420만원 monthly from June 2026. This estimate assumes those earnings were fully added and there were no other deposits or withdrawals.`
+    : "Capital baseline will appear once a snapshot exists on or after March 28, 2025.";
+}
+
+function buildCapitalBaseline() {
+  const actualPoints = pointsFromRows(state.holdings);
+  const anchorObservation = actualPoints.find((point) => point.date >= CAPITAL_ANCHOR_DATE) || null;
+  if (!anchorObservation) {
+    return { anchorObservation: null, points: [] };
+  }
+
+  const points = actualPoints
+    .filter((point) => point.date >= anchorObservation.date)
+    .map((point) => ({
+      date: point.date,
+      value: anchorObservation.value + cumulativeIncomeThrough(point.date),
+    }));
+
+  return { anchorObservation, points };
+}
+
+function cumulativeIncomeThrough(targetDate) {
+  let total = 0;
+  let year = 2025;
+  let month = 4;
+
+  while (year < 2100) {
+    const payDate = `${year}-${String(month).padStart(2, "0")}-28`;
+    if (payDate > targetDate) {
+      break;
+    }
+    total += incomeForMonth(year, month);
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+
+  return total;
+}
+
+function incomeForMonth(year, month) {
+  if (year > 2026 || (year === 2026 && month >= 6)) {
+    return CURRENT_MONTHLY_INCOME;
+  }
+  if (year === 2026 && month === 5) {
+    return MAY_2026_INCOME;
+  }
+  return EARLY_MONTHLY_INCOME;
 }
 
 function renderAssetDistributionChart({ chartId, centerId, metaId, rows, animationMode = "scale" }) {
@@ -616,15 +695,22 @@ function renderLineCharts() {
     return;
   }
 
+  state.lineAnimationGraceUntil = performance.now() + LINE_POINT_ANIMATION_DURATION + LINE_POINT_MAX_DELAY_MS + 250;
+
   const timeline = buildTimeline(state.holdings.map((row) => row.Date));
   const allPoints = pointsFromRows(state.holdings);
   const investmentPoints = pointsFromRows(state.holdings.filter((row) => row.Ticker));
+  const capitalBaseline = buildCapitalBaseline();
+  const actualAssetDataset = buildLineDataset("Actual portfolio", allPoints, "#c7b8ff", { areaFill: true, borderWidth: 2.1 });
+  const capitalBaselineDataset = buildLineDataset("Capital baseline", capitalBaseline.points, "#8f9bab", { borderWidth: 1.5 });
+  capitalBaselineDataset.borderDash = [7, 6];
+  capitalBaselineDataset.pointRadius = 0;
+  capitalBaselineDataset.pointHoverRadius = 4;
+  capitalBaselineDataset.pointBorderWidth = 0;
 
   replaceChart(
     "assetTrendChart",
-    lineChartConfig(timeline, [buildLineDataset("Total assets", allPoints, "#c7b8ff", { areaFill: true, borderWidth: 1.8 })], {
-      showLegend: false,
-    }),
+    lineChartConfig(timeline, capitalBaseline.points.length ? [actualAssetDataset, capitalBaselineDataset] : [actualAssetDataset]),
   );
   replaceChart(
     "investmentTrendChart",
@@ -682,7 +768,6 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      onResize: suppressLineAnimationsForResize,
       interaction: { mode: "nearest", axis: "x", intersect: false },
       animation: {
         x: {

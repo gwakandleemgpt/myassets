@@ -8,11 +8,11 @@
       name="description"
       content="A private portfolio command center for tracking growth, allocation, and future investment plans."
     />
-    <link rel="stylesheet" href="assets/styles.css?v=20260825a" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260825f" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="assets/app.js?v=20260825a" defer></script>
+    <script src="assets/app.js?v=20260825f" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -93,11 +93,16 @@
                   <p class="panel-kicker">Growth</p>
                   <h2>Net worth trajectory</h2>
                 </div>
-                <span id="assetTrendMeta">All assets</span>
+                <div class="performance-readout">
+                  <span>Investment result</span>
+                  <strong id="investmentResult">—</strong>
+                  <small id="assetTrendMeta">Compared with capital baseline</small>
+                </div>
               </header>
               <div class="line-frame hero-line-frame">
                 <canvas id="assetTrendChart"></canvas>
               </div>
+              <p id="capitalBaselineNote" class="capital-baseline-note"></p>
             </article>
 
             <article class="chart-panel pie-panel allocation-panel">
