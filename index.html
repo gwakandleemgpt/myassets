@@ -3,70 +3,109 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Asset Monitor</title>
-    <link rel="stylesheet" href="assets/styles.css?v=20260704ac" />
+    <title>Asset Monitor — Portfolio Intelligence</title>
+    <meta
+      name="description"
+      content="A private portfolio command center for tracking growth, allocation, and future investment plans."
+    />
+    <link rel="stylesheet" href="assets/styles.css?v=20260825a" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="assets/app.js?v=20260704ac" defer></script>
+    <script src="assets/app.js?v=20260825a" defer></script>
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
-        <div class="brand-block">
-          <p class="eyebrow">Personal Portfolio</p>
-          <h1>Asset Monitor</h1>
-          <p id="dataStatus" class="data-status">Loading data...</p>
-        </div>
-
-        <nav class="tabs" aria-label="Primary views">
-          <button class="tab-button is-active" type="button" data-tab="dashboard" aria-selected="true">
-            <i data-lucide="chart-pie"></i>
-            <span>Dashboard</span>
-          </button>
-          <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
-            <i data-lucide="list-plus"></i>
-            <span>Future Plan</span>
-          </button>
-        </nav>
-      </header>
+      <nav class="tabs view-tabs" aria-label="Primary views">
+        <button class="tab-button is-active" type="button" data-tab="dashboard" aria-selected="true">
+          <i data-lucide="chart-pie"></i>
+          <span>Overview</span>
+        </button>
+        <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
+          <i data-lucide="list-plus"></i>
+          <span>Plan</span>
+        </button>
+      </nav>
+      <span id="dataStatus" class="sr-only" aria-live="polite">Loading portfolio...</span>
 
       <main>
         <section id="dashboard" class="tab-panel is-active">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Portfolio overview</p>
+              <h1>Your capital, clearly.</h1>
+              <p class="page-lede">See what changed, where your money sits, and what deserves attention.</p>
+            </div>
+            <p class="as-of-label"><span>As of</span><strong id="viewDateLabel">Latest snapshot</strong></p>
+          </div>
+
           <div class="control-band">
             <section class="metric-strip" aria-label="Portfolio summary">
-              <div class="metric">
-                <span>Total volume</span>
+              <div class="metric metric-primary">
+                <span>Total portfolio</span>
                 <strong id="metricTotal">-</strong>
+                <small>Across all accounts</small>
               </div>
               <div class="metric">
-                <span>Investment volume</span>
+                <span id="metricChangeLabel">Since prior snapshot</span>
+                <strong id="metricChange">-</strong>
+                <small id="metricChangePercent">Waiting for history</small>
+              </div>
+              <div class="metric">
+                <span>Invested capital</span>
                 <strong id="metricInvestment">-</strong>
+                <small id="metricInvestmentPercent">Market-linked holdings</small>
+              </div>
+              <div class="metric">
+                <span>Cash reserve</span>
+                <strong id="metricCash">-</strong>
+                <small id="metricCashPercent">-</small>
               </div>
             </section>
 
             <div class="timeline-control">
               <label class="field field-date" for="dateSelect">
-                <span>View date</span>
+                <span>Snapshot</span>
                 <select id="dateSelect"></select>
               </label>
-              <input id="dateSlider" class="date-slider" type="range" min="0" value="0" />
+              <div class="slider-wrap">
+                <span>Earlier</span>
+                <input id="dateSlider" class="date-slider" type="range" min="0" value="0" aria-label="Portfolio snapshot timeline" />
+                <span>Latest</span>
+              </div>
               <div class="button-row">
-                <button id="resetDataBtn" class="icon-button" type="button" title="Reload source CSV">
+                <button id="resetDataBtn" class="text-button quiet-button" type="button" title="Reload source CSV">
                   <i data-lucide="refresh-ccw"></i>
+                  <span>Refresh</span>
                 </button>
                 <button id="exportHoldingsBtn" class="text-button" type="button">
                   <i data-lucide="download"></i>
-                  <span>Export data</span>
+                  <span>Export CSV</span>
                 </button>
               </div>
             </div>
           </div>
 
-          <section class="chart-grid" aria-label="Portfolio charts">
-            <article class="chart-panel pie-panel">
+          <section class="chart-grid" aria-label="Portfolio analysis">
+            <article class="chart-panel line-panel hero-chart-panel">
               <header class="panel-header">
-                <h2>Asset Distribution</h2>
+                <div>
+                  <p class="panel-kicker">Growth</p>
+                  <h2>Net worth trajectory</h2>
+                </div>
+                <span id="assetTrendMeta">All assets</span>
+              </header>
+              <div class="line-frame hero-line-frame">
+                <canvas id="assetTrendChart"></canvas>
+              </div>
+            </article>
+
+            <article class="chart-panel pie-panel allocation-panel">
+              <header class="panel-header">
+                <div>
+                  <p class="panel-kicker">Composition</p>
+                  <h2>Asset allocation</h2>
+                </div>
                 <span id="assetDistributionMeta"></span>
               </header>
               <div class="pie-frame">
@@ -77,19 +116,47 @@
               </div>
             </article>
 
-            <article class="chart-panel line-panel">
-              <header class="panel-header">
-                <h2>Asset Trend</h2>
-                <span>Monthly chunks</span>
-              </header>
-              <div class="line-frame">
-                <canvas id="assetTrendChart"></canvas>
+            <section class="insight-strip" aria-label="Portfolio signals">
+              <article class="insight-card">
+                <div class="insight-icon"><i data-lucide="crosshair"></i></div>
+                <div>
+                  <p>Largest position</p>
+                  <strong id="insightLargestPosition">—</strong>
+                  <span id="insightLargestPositionMeta">Waiting for snapshot</span>
+                </div>
+              </article>
+              <article class="insight-card">
+                <div class="insight-icon"><i data-lucide="layers-3"></i></div>
+                <div>
+                  <p>Leading allocation</p>
+                  <strong id="insightLargestAllocation">—</strong>
+                  <span id="insightLargestAllocationMeta">Waiting for snapshot</span>
+                </div>
+              </article>
+              <article class="insight-card">
+                <div class="insight-icon"><i data-lucide="landmark"></i></div>
+                <div>
+                  <p>Account footprint</p>
+                  <strong id="insightInstitutions">—</strong>
+                  <span id="insightInstitutionsMeta">Across connected institutions</span>
+                </div>
+              </article>
+            </section>
+
+            <div class="section-divider">
+              <div>
+                <p class="eyebrow">Deep dive</p>
+                <h2>Portfolio detail</h2>
               </div>
-            </article>
+              <p>Hover or select a legend to focus the charts.</p>
+            </div>
 
             <article class="chart-panel pie-panel">
               <header class="panel-header">
-                <h2>Portfolio</h2>
+                <div>
+                  <p class="panel-kicker">Holdings</p>
+                  <h2>Position mix</h2>
+                </div>
                 <span id="portfolioMeta"></span>
               </header>
               <div class="pie-frame">
@@ -102,8 +169,11 @@
 
             <article class="chart-panel line-panel">
               <header class="panel-header">
-                <h2>Value Trend</h2>
-                <span>Individual tickers</span>
+                <div>
+                  <p class="panel-kicker">Comparison</p>
+                  <h2>Holding trajectories</h2>
+                </div>
+                <span>All positions · select to isolate</span>
               </header>
               <div class="line-frame">
                 <canvas id="valueTrendChart"></canvas>
@@ -112,8 +182,11 @@
 
             <article class="chart-panel line-panel">
               <header class="panel-header">
-                <h2>Investment Trend</h2>
-                <span>Ticker rows only</span>
+                <div>
+                  <p class="panel-kicker">Exposure</p>
+                  <h2>Invested capital</h2>
+                </div>
+                <span>Ticker-linked holdings only</span>
               </header>
               <div class="line-frame">
                 <canvas id="investmentTrendChart"></canvas>
@@ -122,7 +195,10 @@
 
             <article class="chart-panel pie-panel">
               <header class="panel-header">
-                <h2>Securities Firm</h2>
+                <div>
+                  <p class="panel-kicker">Custody</p>
+                  <h2>Institution exposure</h2>
+                </div>
                 <span id="firmMeta"></span>
               </header>
               <div class="pie-frame">
@@ -136,29 +212,67 @@
         </section>
 
         <section id="plans" class="tab-panel">
+          <div class="page-heading plan-page-heading">
+            <div>
+              <p class="eyebrow">Scenario planner</p>
+              <h1>Design what comes next.</h1>
+              <p class="page-lede">Turn your latest portfolio into a working target and see every required move.</p>
+            </div>
+            <div class="plan-status-chip">
+              <span class="status-dot" aria-hidden="true"></span>
+              <strong id="planStatus">Based on latest snapshot</strong>
+            </div>
+          </div>
+
+          <section class="plan-pulse" aria-label="Plan summary">
+            <div class="plan-metric plan-metric-primary">
+              <span>Planned total</span>
+              <strong id="metricPlanTotal">—</strong>
+              <small>Target portfolio value</small>
+            </div>
+            <div class="plan-metric">
+              <span>Change required</span>
+              <strong id="metricPlanDelta">—</strong>
+              <small id="metricPlanDeltaPercent">Compared with latest</small>
+            </div>
+            <div class="plan-metric">
+              <span>Invested share</span>
+              <strong id="metricPlanInvestment">—</strong>
+              <small>Planned market exposure</small>
+            </div>
+            <div class="plan-metric">
+              <span>Asset classes</span>
+              <strong id="metricPlanClasses">—</strong>
+              <small>Represented in this scenario</small>
+            </div>
+          </section>
+
           <div class="workspace-grid">
-            <section class="workspace-panel">
+            <section class="workspace-panel plan-editor-panel">
               <div class="panel-header">
-                <h2>Plan Editor</h2>
-                <span id="planStatus">Based on latest snapshot</span>
+                <div>
+                  <p class="panel-kicker">Add a position</p>
+                  <h2>Plan editor</h2>
+                </div>
+                <span>Changes stay in this browser until export</span>
               </div>
 
               <form id="planForm" class="plan-form">
                 <label class="field" for="planTicker">
                   <span>Ticker</span>
-                  <input id="planTicker" type="text" autocomplete="off" />
+                  <input id="planTicker" type="text" autocomplete="off" placeholder="e.g. SCHD" />
                 </label>
                 <label class="field" for="planAssetType">
                   <span>Asset type</span>
                   <select id="planAssetType"></select>
                 </label>
                 <label class="field" for="planVolume">
-                  <span>Volume</span>
-                  <input id="planVolume" type="number" min="0" step="1" required />
+                  <span>Planned value (KRW)</span>
+                  <input id="planVolume" type="number" min="0" step="1" inputmode="numeric" placeholder="0" required />
                 </label>
                 <button class="text-button primary" type="submit">
                   <i data-lucide="plus"></i>
-                  <span>Add row</span>
+                  <span>Add to plan</span>
                 </button>
               </form>
 
@@ -169,27 +283,39 @@
                 </button>
                 <button id="resetPlansBtn" class="text-button" type="button">
                   <i data-lucide="rotate-ccw"></i>
-                  <span>Reset latest</span>
+                  <span>Start over</span>
                 </button>
               </div>
             </section>
 
-            <section class="workspace-panel pie-workspace-panel">
+            <section class="workspace-panel pie-workspace-panel plan-target-panel">
               <div class="panel-header">
-                <h2>Mock Asset Distribution</h2>
+                <div>
+                  <p class="panel-kicker">Target state</p>
+                  <h2>Allocation preview</h2>
+                </div>
                 <span id="planChartMeta">-</span>
               </div>
-              <div class="pie-frame plan-pie">
-                <div class="pie-canvas-frame">
-                  <canvas id="planChart"></canvas>
-                  <div id="planCenter" class="donut-center"></div>
+              <div class="plan-target-grid">
+                <div class="pie-frame plan-pie">
+                  <div class="pie-canvas-frame">
+                    <canvas id="planChart"></canvas>
+                    <div id="planCenter" class="donut-center"></div>
+                  </div>
+                </div>
+                <div class="allocation-delta-wrap">
+                  <p class="delta-heading">Current → planned</p>
+                  <div id="planDeltaList" class="allocation-delta-list"></div>
                 </div>
               </div>
             </section>
 
             <section class="workspace-panel wide-workspace">
               <div class="panel-header">
-                <h2>Working Plan</h2>
+                <div>
+                  <p class="panel-kicker">Execution map</p>
+                  <h2>Working plan</h2>
+                </div>
                 <span id="planTableMeta">-</span>
               </div>
               <div class="table-frame plan-table">
@@ -198,7 +324,9 @@
                     <tr>
                       <th>Asset Type</th>
                       <th>Ticker</th>
-                      <th class="number-cell">Volume</th>
+                      <th class="number-cell">Current</th>
+                      <th class="number-cell">Planned</th>
+                      <th class="number-cell">Change</th>
                       <th></th>
                     </tr>
                   </thead>

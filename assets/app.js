@@ -344,9 +344,30 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   const total = sumRows(rows);
   const investmentTotal = sumRows(tickerRows);
   const investmentPercent = total ? Math.round((investmentTotal / total) * 100) : 0;
+  const cashTotal = Math.max(total - investmentTotal, 0);
+  const cashPercent = total ? Math.round((cashTotal / total) * 100) : 0;
+  const viewDateIndex = state.dates.indexOf(state.viewDate);
+  const previousDate = viewDateIndex > 0 ? state.dates[viewDateIndex - 1] : "";
+  const previousTotal = previousDate ? sumRows(state.holdings.filter((row) => row.Date === previousDate)) : 0;
+  const totalChange = previousDate ? total - previousTotal : 0;
+  const totalChangePercent = previousTotal ? (totalChange / previousTotal) * 100 : 0;
 
   byId("metricTotal").textContent = formatCurrency(total);
-  byId("metricInvestment").innerHTML = `${formatCurrency(investmentTotal)} <span class="metric-percent">(${investmentPercent}%)</span>`;
+  byId("metricInvestment").textContent = formatCurrency(investmentTotal);
+  byId("metricInvestmentPercent").textContent = `${investmentPercent}% of total portfolio`;
+  byId("metricCash").textContent = formatCurrency(cashTotal);
+  byId("metricCashPercent").textContent = `${cashPercent}% available outside tickers`;
+  byId("viewDateLabel").textContent = formatDateLabel(state.viewDate);
+  byId("metricChangeLabel").textContent = previousDate ? `Since ${formatShortDateLabel(previousDate)}` : "Since prior snapshot";
+  byId("metricChange").textContent = previousDate ? formatSignedCurrency(totalChange) : "—";
+  byId("metricChangePercent").textContent = previousDate ? `${formatSignedPercent(totalChangePercent)} portfolio change` : "First available snapshot";
+  byId("metricChange").classList.toggle("is-positive", totalChange > 0);
+  byId("metricChange").classList.toggle("is-negative", totalChange < 0);
+
+  renderPortfolioSignals(rows, total);
+  byId("assetTrendMeta").textContent = state.dates.length
+    ? `${state.dates.length} snapshots · ${formatShortDateLabel(state.dates[0])} → ${formatShortDateLabel(state.dates[state.dates.length - 1])}`
+    : "No history";
 
   renderAssetDistributionChart({
     chartId: "assetDistributionChart",
@@ -381,12 +402,37 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   }
 }
 
+function renderPortfolioSignals(rows, total) {
+  const tickerEntries = [...groupSum(rows.filter((row) => row.Ticker), "Ticker").entries()].sort((a, b) => b[1] - a[1]);
+  const assetEntries = [...groupSum(rows, "Asset Type").entries()].sort((a, b) => b[1] - a[1]);
+  const firmEntries = [...groupSum(rows, "Securities Firm").entries()].sort((a, b) => b[1] - a[1]);
+  const [largestTicker = "—", largestTickerValue = 0] = tickerEntries[0] || [];
+  const [largestAsset = "—", largestAssetValue = 0] = assetEntries[0] || [];
+  const [largestFirm = "—", largestFirmValue = 0] = firmEntries[0] || [];
+
+  byId("insightLargestPosition").textContent = largestTicker;
+  byId("insightLargestPositionMeta").textContent = largestTickerValue
+    ? `${formatCurrency(largestTickerValue)} · ${formatPercentOf(largestTickerValue, total)} of total`
+    : "No ticker-linked positions";
+  byId("insightLargestAllocation").textContent = largestAsset;
+  byId("insightLargestAllocationMeta").textContent = largestAssetValue
+    ? `${formatCurrency(largestAssetValue)} · ${formatPercentOf(largestAssetValue, total)} of total`
+    : "No allocation data";
+  byId("insightInstitutions").textContent = `${firmEntries.length} ${firmEntries.length === 1 ? "institution" : "institutions"}`;
+  byId("insightInstitutionsMeta").textContent = largestFirmValue
+    ? `${largestFirm} holds ${formatPercentOf(largestFirmValue, total)}`
+    : "No institution data";
+}
+
 function renderAssetDistributionChart({ chartId, centerId, metaId, rows, animationMode = "scale" }) {
   const { parents, details, total } = buildAssetDistributionSegments(rows);
   const labels = details.map((detail) => detail.label);
+  const largestParent = parents[0];
 
-  byId(centerId).innerHTML = `<strong>${formatCurrency(total)}</strong><span>${formatDateLabel(state.viewDate)}</span>`;
-  byId(metaId).textContent = `${parents.length} groups / ${details.length} splits`;
+  byId(centerId).innerHTML = largestParent
+    ? `<strong>${formatPercentOf(largestParent.value, total)}</strong><span>${escapeHtml(largestParent.label)} · leading</span>`
+    : `<strong>—</strong><span>No allocation</span>`;
+  byId(metaId).textContent = `${parents.length} classes · ${details.length} positions`;
 
   replaceChart(chartId, {
     type: "doughnut",
@@ -542,8 +588,10 @@ function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind, anima
   const values = entries.map(([, value]) => value);
   const total = values.reduce((sum, value) => sum + value, 0);
 
-  byId(centerId).innerHTML = `<strong>${formatCurrency(total)}</strong><span>${formatDateLabel(state.viewDate)}</span>`;
-  byId(metaId).textContent = `${labels.length} groups`;
+  byId(centerId).innerHTML = labels.length
+    ? `<strong>${formatPercentOf(values[0], total)}</strong><span>${escapeHtml(labels[0])} · largest</span>`
+    : `<strong>—</strong><span>No data</span>`;
+  byId(metaId).textContent = `${labels.length} ${labels.length === 1 ? "group" : "groups"}`;
 
   replaceChart(chartId, {
     type: "doughnut",
@@ -600,10 +648,18 @@ function renderLineCharts() {
 }
 
 function lineChartConfig(timeline, datasets, { legendClickMode = "default", legendHoverMode = "default", showLegend = true } = {}) {
+  const compactChart = window.innerWidth < 720;
   const legendOptions = showLegend
     ? {
         position: "bottom",
-        labels: { boxWidth: 10, boxHeight: 10, color: "#d5dce7", usePointStyle: true },
+        labels: {
+          boxWidth: 8,
+          boxHeight: 8,
+          color: "#b9c3d0",
+          usePointStyle: true,
+          padding: compactChart ? 8 : 12,
+          font: { size: compactChart ? 9 : 10, weight: 600 },
+        },
       }
     : {
         display: false,
@@ -644,8 +700,8 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
       plugins: {
         legend: legendOptions,
         tooltip: {
-          backgroundColor: "rgba(24, 29, 24, 0.94)",
-          borderColor: "rgba(218, 225, 236, 0.18)",
+          backgroundColor: "rgba(10, 13, 18, 0.96)",
+          borderColor: "rgba(218, 230, 224, 0.16)",
           borderWidth: 1,
           titleColor: "#f3f6fb",
           bodyColor: "#dce3ee",
@@ -663,26 +719,31 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
           afterBuildTicks: (scale) => {
             scale.ticks = timeline.months.map((month) => ({ value: month.day }));
           },
-          border: { color: "rgba(218, 225, 236, 0.24)" },
+          border: { display: false },
           grid: {
-            color: "rgba(218, 225, 236, 0.2)",
+            color: compactChart ? "rgba(218, 230, 224, 0.045)" : "rgba(218, 230, 224, 0.08)",
             lineWidth: 1,
             tickLength: 8,
           },
           ticks: {
-            autoSkip: false,
-            color: "#adb7c5",
+            autoSkip: true,
+            maxTicksLimit: compactChart ? 6 : 11,
+            color: "#7f8a99",
             maxRotation: 0,
             padding: 8,
+            font: { size: compactChart ? 9 : 10, weight: 600 },
             callback: (value) => monthLabelForDay(timeline, value),
           },
         },
         y: {
           beginAtZero: false,
-          border: { color: "rgba(218, 225, 236, 0.24)" },
-          grid: { color: "rgba(218, 225, 236, 0.11)" },
+          border: { display: false },
+          grid: { color: "rgba(218, 230, 224, 0.065)" },
           ticks: {
-            color: "#adb7c5",
+            color: "#7f8a99",
+            padding: 8,
+            maxTicksLimit: compactChart ? 5 : 7,
+            font: { size: compactChart ? 9 : 10, weight: 600 },
             callback: (value) => formatCurrency(value),
           },
         },
@@ -734,8 +795,8 @@ function buildLineDataset(label, points, color, { areaFill = false, borderWidth 
     fill: areaFill ? "start" : false,
     tension: 0.42,
     spanGaps: true,
-    pointRadius: 3,
-    pointHoverRadius: 6,
+    pointRadius: window.innerWidth < 720 ? 2 : 2.5,
+    pointHoverRadius: 5,
     pointHitRadius: 8,
   };
 }
@@ -876,10 +937,26 @@ function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
   const labels = entries.map(([label]) => label);
   const values = entries.map(([, value]) => value);
   const total = values.reduce((sum, value) => sum + value, 0);
+  const latestRows = state.holdings.filter((row) => row.Date === latestDataDate());
+  const currentTotal = sumRows(latestRows);
+  const planDelta = total - currentTotal;
+  const planDeltaPercent = currentTotal ? (planDelta / currentTotal) * 100 : 0;
+  const planInvestment = sumRows(state.plans.filter((row) => row.Ticker));
+  const planInvestmentPercent = total ? Math.round((planInvestment / total) * 100) : 0;
 
-  byId("planCenter").innerHTML = `<strong>${formatCurrency(total)}</strong><span>Working plan</span>`;
-  byId("planChartMeta").textContent = `${labels.length} groups`;
-  byId("planTableMeta").textContent = `${state.plans.length} rows from ${formatDateLabel(latestDataDate())}`;
+  byId("planCenter").innerHTML = labels.length
+    ? `<strong>${formatPercentOf(values[0], total)}</strong><span>${escapeHtml(labels[0])} · leading</span>`
+    : `<strong>—</strong><span>No planned assets</span>`;
+  byId("planChartMeta").textContent = `${labels.length} ${labels.length === 1 ? "class" : "classes"}`;
+  byId("planTableMeta").textContent = `${state.plans.length} positions · based on ${formatDateLabel(latestDataDate())}`;
+  byId("metricPlanTotal").textContent = formatCurrency(total);
+  byId("metricPlanDelta").textContent = formatSignedCurrency(planDelta);
+  byId("metricPlanDeltaPercent").textContent = `${formatSignedPercent(planDeltaPercent)} compared with latest`;
+  byId("metricPlanInvestment").textContent = `${planInvestmentPercent}%`;
+  byId("metricPlanClasses").textContent = String(labels.length);
+  byId("metricPlanDelta").classList.toggle("is-positive", planDelta > 0);
+  byId("metricPlanDelta").classList.toggle("is-negative", planDelta < 0);
+  renderPlanAllocationDeltas(grouped, total, latestRows, currentTotal);
 
   replaceChart("planChart", {
     type: "doughnut",
@@ -902,10 +979,17 @@ function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
 
   byId("planTableBody").innerHTML = sortedPlans
     .map(({ row, originalIndex }, index) => {
+      const currentVolume = sumRows(
+        latestRows.filter((currentRow) => currentRow["Asset Type"] === row["Asset Type"] && currentRow.Ticker === row.Ticker),
+      );
+      const plannedVolume = Number(row.Volume || 0);
+      const volumeChange = plannedVolume - currentVolume;
+      const changeClass = volumeChange > 0 ? "change-positive" : volumeChange < 0 ? "change-negative" : "";
       return `
         <tr>
           <td>${escapeHtml(row["Asset Type"])}</td>
           <td>${escapeHtml(row.Ticker || "-")}</td>
+          <td class="number-cell">${escapeHtml(formatCurrency(currentVolume))}</td>
           <td class="number-cell">
             <input
               class="volume-edit"
@@ -917,6 +1001,7 @@ function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
               aria-label="Edit volume for plan row ${index + 1}"
             />
           </td>
+          <td class="number-cell ${changeClass}">${escapeHtml(formatSignedCurrency(volumeChange))}</td>
           <td class="action-cell">
             <button class="icon-button small" type="button" data-remove-plan-index="${originalIndex}" title="Remove plan ${index + 1}">
               <i data-lucide="x"></i>
@@ -952,6 +1037,44 @@ function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
   renderIcons();
 }
 
+function renderPlanAllocationDeltas(plannedGroups, plannedTotal, currentRows, currentTotal) {
+  const currentGroups = groupSum(currentRows, "Asset Type");
+  const labels = unique([...currentGroups.keys(), ...plannedGroups.keys()]);
+  const rows = labels
+    .map((label, index) => {
+      const currentValue = currentGroups.get(label) || 0;
+      const plannedValue = plannedGroups.get(label) || 0;
+      return {
+        label,
+        delta: plannedValue - currentValue,
+        currentPercent: currentTotal ? Math.round((currentValue / currentTotal) * 100) : 0,
+        plannedPercent: plannedTotal ? Math.round((plannedValue / plannedTotal) * 100) : 0,
+        color: colorFor("asset", label, index),
+      };
+    })
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  byId("planDeltaList").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const changeClass = row.delta > 0 ? "change-positive" : row.delta < 0 ? "change-negative" : "";
+          return `
+            <div class="allocation-delta-row">
+              <div class="allocation-delta-copy">
+                <span class="allocation-delta-label">
+                  <span class="allocation-delta-swatch" style="--delta-color: ${escapeHtml(row.color)}"></span>
+                  ${escapeHtml(row.label)}
+                </span>
+                <small>${row.currentPercent}% → ${row.plannedPercent}%</small>
+              </div>
+              <span class="allocation-delta-value ${changeClass}">${escapeHtml(formatSignedCurrency(row.delta))}</span>
+            </div>
+          `;
+        })
+        .join("")
+    : `<p class="allocation-empty">Add a position to start shaping this scenario.</p>`;
+}
+
 function replaceChart(chartId, config) {
   const canvas = byId(chartId);
   if (state.charts[chartId]) {
@@ -983,8 +1106,8 @@ function doughnutOptions(total, animationMode = "scale", { cutout = "66%", legen
         },
       },
       tooltip: {
-        backgroundColor: "rgba(24, 29, 24, 0.94)",
-        borderColor: "rgba(218, 225, 236, 0.18)",
+        backgroundColor: "rgba(10, 13, 18, 0.96)",
+        borderColor: "rgba(218, 230, 224, 0.16)",
         borderWidth: 1,
         titleColor: "#f3f6fb",
         bodyColor: "#dce3ee",
@@ -1112,10 +1235,11 @@ function configureChartDefaults() {
     return;
   }
 
-  Chart.defaults.color = "#d5dce7";
-  Chart.defaults.borderColor = "rgba(218, 225, 236, 0.12)";
+  Chart.defaults.color = "#b9c3d0";
+  Chart.defaults.borderColor = "rgba(218, 230, 224, 0.09)";
   Chart.defaults.font.family =
-    "'Nanum Gothic', 'NanumGothic', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    "Inter, Pretendard, 'Noto Sans KR', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  Chart.defaults.font.weight = 600;
 }
 
 function normalizeCsvText(text, { defaultPlan = "No" } = {}) {
@@ -1438,12 +1562,38 @@ function formatCurrency(value) {
   return `${sign}${parts.join(" ")}`;
 }
 
+function formatSignedCurrency(value) {
+  const amount = Number(value || 0);
+  if (!amount) {
+    return "0만원";
+  }
+  return `${amount > 0 ? "+" : ""}${formatCurrency(amount)}`;
+}
+
+function formatSignedPercent(value) {
+  const amount = Number(value || 0);
+  const sign = amount > 0 ? "+" : "";
+  return `${sign}${amount.toFixed(1)}%`;
+}
+
+function formatPercentOf(value, total) {
+  return total ? `${Math.round((Number(value || 0) / total) * 100)}%` : "0%";
+}
+
 function formatDateLabel(isoDate) {
   if (!isoDate) {
     return "-";
   }
   const date = new Date(`${isoDate}T00:00:00Z`);
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+function formatShortDateLabel(isoDate) {
+  if (!isoDate) {
+    return "-";
+  }
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 function compareRows(a, b) {
@@ -1510,7 +1660,8 @@ function setPlanStatus(text) {
 }
 
 function statusText() {
-  return `${state.holdings.length} rows · ${state.dates.length} snapshots · source CSV`;
+  const latestDate = latestDataDate();
+  return latestDate ? `${state.dates.length} snapshots · latest ${formatShortDateLabel(latestDate)}` : "No portfolio data";
 }
 
 function renderIcons() {
