@@ -213,6 +213,35 @@
                 </div>
               </div>
             </article>
+
+            <article class="chart-panel line-panel return-panel">
+              <header class="panel-header">
+                <div>
+                  <p class="panel-kicker">Performance</p>
+                  <h2>Monthly pure investment return</h2>
+                </div>
+                <div class="performance-readout">
+                  <span>Cumulative return</span>
+                  <strong id="cumulativeReturn">—</strong>
+                  <small id="annualizedReturn">Waiting for return history</small>
+                </div>
+              </header>
+              <div class="return-chart-stack">
+                <div class="return-chart-section">
+                  <span class="return-chart-label">Cumulative return</span>
+                  <div class="line-frame return-line-frame">
+                    <canvas id="cumulativeReturnChart"></canvas>
+                  </div>
+                </div>
+                <div class="return-chart-section">
+                  <span class="return-chart-label">Monthly return</span>
+                  <div class="line-frame return-line-frame">
+                    <canvas id="investmentReturnChart"></canvas>
+                  </div>
+                </div>
+              </div>
+              <p id="investmentReturnNote" class="capital-baseline-note"></p>
+            </article>
           </section>
         </section>
 

@@ -1,0 +1,7 @@
+# Historical transaction statements and reconciliation artifacts contain private
+# financial data. Keep the completed one-time reconstruction archive local.
+private/
+
+# Python cache files from the completed reconstruction work.
+__pycache__/
+*.py[cod]

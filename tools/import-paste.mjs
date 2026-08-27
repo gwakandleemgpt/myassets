@@ -8,15 +8,23 @@ import { catalogToMaps, readCatalog } from "./catalog-utils.mjs";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const dataDir = path.join(repoRoot, "data");
+const privateDir = path.join(repoRoot, "private", "monthly");
 const holdingsPath = path.join(dataDir, "portfolio-clean.csv");
 const plansPath = path.join(dataDir, "portfolio-plans.csv");
+const flowsPath = path.join(privateDir, "portfolio-flows.csv");
+const capitalBaselinePath = path.join(dataDir, "capital-baseline.csv");
+const investmentReturnsPath = path.join(dataDir, "investment-returns.csv");
 const catalog = readCatalog(repoRoot);
 const catalogMaps = catalogToMaps(catalog);
 
 const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
+const FLOW_COLUMNS = ["Date", "Flow Type", "Securities Firm", "Category", "Note", "Volume"];
+const BASELINE_COLUMNS = ["Date", "Volume"];
+const RETURN_COLUMNS = ["Period Start", "Period End", "Monthly Return", "Cumulative Return", "Confidence"];
 const CASH_ASSET_TYPE = catalog.cashAssetType;
 const UNCLASSIFIED_ASSET_TYPE = catalog.unclassifiedAssetType;
 const BALANCE_PREFIX = catalog.balanceNamePrefix;
+const BANK_LIKE_FIRMS = catalogMaps.bankLikeFirms;
 
 main().catch((error) => {
   console.error(`Import failed: ${error.message}`);
@@ -36,6 +44,9 @@ async function main() {
 
   const existingHoldings = normalizeStoredRows(readCsvFile(holdingsPath));
   const existingPlans = normalizeStoredRows(readCsvFile(plansPath));
+  const existingFlows = normalizeStoredFlows(readCsvFile(flowsPath));
+  const existingCapitalBaseline = normalizeCapitalBaselineRows(readCsvFile(capitalBaselinePath));
+  const existingInvestmentReturns = normalizeInvestmentReturnRows(readCsvFile(investmentReturnsPath));
   const inputText = await readInput(options);
   const rawInputRows = parseInputRows(inputText);
   if (!rawInputRows.length) {
@@ -49,14 +60,39 @@ async function main() {
     throw new Error("No usable holding rows found.");
   }
 
+  const incomingFlows = options.noFlows || options.inputFile || !process.stdin.isTTY
+    ? []
+    : await readInteractiveFlows(existingHoldings, incoming.latestDate);
   const holdingsMerge = mergeHoldings(existingHoldings, incoming.holdings);
+  const flowsMerge = mergeFlows(existingFlows, incomingFlows);
+  const nextCapitalBaseline = rebuildCapitalBaseline(existingCapitalBaseline, flowsMerge.rows, holdingsMerge.rows);
+  const nextInvestmentReturns = extendInvestmentReturns(existingInvestmentReturns, flowsMerge.rows, holdingsMerge.rows);
   const nextHoldingsText = toCsv(holdingsMerge.rows, OUTPUT_COLUMNS);
   const nextPlansText = toCsv(existingPlans, OUTPUT_COLUMNS);
+  const nextFlowsText = toCsv(flowsMerge.rows, FLOW_COLUMNS);
+  const nextCapitalBaselineText = toCsv(nextCapitalBaseline, BASELINE_COLUMNS);
+  const nextInvestmentReturnsText = toCsv(nextInvestmentReturns, RETURN_COLUMNS);
   const holdingsChanged = normalizeFileText(holdingsPath) !== nextHoldingsText;
   const plansChanged = normalizeFileText(plansPath) !== nextPlansText;
-  const hasChanges = holdingsChanged || plansChanged;
+  const flowsChanged = normalizeFileText(flowsPath) !== nextFlowsText;
+  const capitalBaselineChanged = normalizeFileText(capitalBaselinePath) !== nextCapitalBaselineText;
+  const investmentReturnsChanged = normalizeFileText(investmentReturnsPath) !== nextInvestmentReturnsText;
+  const hasChanges = holdingsChanged || plansChanged || flowsChanged || capitalBaselineChanged || investmentReturnsChanged;
 
-  printSummary(incoming, holdingsMerge.stats, { holdingsChanged, plansChanged });
+  printSummary(
+    incoming,
+    holdingsMerge.stats,
+    flowsMerge.stats,
+    {
+      holdingsChanged,
+      plansChanged,
+      flowsChanged,
+      capitalBaselineChanged,
+      investmentReturnsChanged,
+    },
+    nextCapitalBaseline,
+    nextInvestmentReturns,
+  );
 
   if (options.dryRun) {
     console.log("Dry run only. No files were written.");
@@ -69,9 +105,13 @@ async function main() {
   }
 
   fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(privateDir, { recursive: true });
   fs.writeFileSync(holdingsPath, nextHoldingsText, "utf8");
   fs.writeFileSync(plansPath, nextPlansText, "utf8");
-  console.log("Wrote data/portfolio-clean.csv and data/portfolio-plans.csv.");
+  fs.writeFileSync(flowsPath, nextFlowsText, "utf8");
+  fs.writeFileSync(capitalBaselinePath, nextCapitalBaselineText, "utf8");
+  fs.writeFileSync(investmentReturnsPath, nextInvestmentReturnsText, "utf8");
+  console.log("Wrote portfolio snapshots and monthly cash-flow records.");
 
   if (!options.commit) {
     console.log("Commit skipped because --no-commit was provided.");
@@ -89,6 +129,7 @@ function parseArgs(argv) {
     help: false,
     inputFile: "",
     message: "",
+    noFlows: false,
     promptOnly: false,
     push: true,
   };
@@ -104,6 +145,8 @@ function parseArgs(argv) {
       options.push = false;
     } else if (arg === "--no-push") {
       options.push = false;
+    } else if (arg === "--no-flows") {
+      options.noFlows = true;
     } else if (arg === "--date") {
       options.date = requireValue(argv, (index += 1), arg);
     } else if (arg === "--message" || arg === "-m") {
@@ -190,6 +233,136 @@ async function readAllStdin() {
   return text;
 }
 
+async function readInteractiveFlows(existingHoldings, latestDate) {
+  const defaultDate = defaultFlowDate(existingHoldings, latestDate);
+  const rows = [];
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+
+  console.log("");
+  console.log("이제 지난 기록 이후의 현금흐름을 입력합니다.");
+  console.log("일상 소비와 은행끼리/증권사끼리 옮긴 돈은 입력하지 않아도 됩니다.");
+  console.log("외부 돈이 증권계좌로 바로 들어왔다면 외부 유입과 투자 입금 양쪽에 각각 입력하세요.");
+  console.log("");
+
+  try {
+    while (true) {
+      const amountText = (await askLine(
+        rl,
+        "외부 현금흐름 금액 (+유입, -세금·증여 등 / 없으면 Enter): ",
+      )).trim();
+      if (!amountText) {
+        break;
+      }
+
+      const amount = parseVolume(amountText);
+      if (!amount) {
+        console.log("0이 아닌 원화 금액을 입력해 주세요.");
+        continue;
+      }
+
+      const flowType = amount > 0 ? "외부유입" : "외부유출";
+      const defaultCategory = amount > 0 ? "월급" : "세금";
+      const category = (await askLine(rl, `종류 [${defaultCategory}]: `)).trim() || defaultCategory;
+      const date = await askDate(rl, defaultDate);
+      const note = (await askLine(rl, "메모 (선택 / Enter): ")).trim();
+      rows.push({
+        Date: date,
+        "Flow Type": flowType,
+        "Securities Firm": "",
+        Category: category,
+        Note: note,
+        Volume: String(Math.abs(amount)),
+      });
+      console.log("외부 현금흐름을 추가했습니다. 더 있으면 계속 입력하세요.");
+    }
+
+    console.log("");
+    console.log("은행↔증권 이동은 순수 투자수익률 계산에 필요합니다.");
+    while (true) {
+      const direction = normalizeText(await askLine(
+        rl,
+        "이동 방향 [1=은행→증권, 2=증권→은행 / 없으면 Enter]: ",
+      ));
+      if (!direction) {
+        break;
+      }
+
+      const flowType = parseInvestmentDirection(direction);
+      if (!flowType) {
+        console.log("1 또는 2를 입력해 주세요.");
+        continue;
+      }
+
+      const amountText = (await askLine(rl, "이동 금액: ")).trim();
+      const amount = parseVolume(amountText);
+      if (!amount || amount < 0) {
+        console.log("0보다 큰 원화 금액을 입력해 주세요.");
+        continue;
+      }
+
+      const firm = (await askLine(rl, "증권사 (선택 / Enter): ")).trim();
+      const date = await askDate(rl, defaultDate);
+      const note = (await askLine(rl, "메모 (선택 / Enter): ")).trim();
+      rows.push({
+        Date: date,
+        "Flow Type": flowType,
+        "Securities Firm": firm,
+        Category: "",
+        Note: note,
+        Volume: String(amount),
+      });
+      console.log("투자계좌 이동을 추가했습니다. 더 있으면 계속 입력하세요.");
+    }
+  } finally {
+    rl.close();
+  }
+
+  console.log(`현금흐름 ${rows.length}건을 이번 기록에 포함합니다.`);
+  return rows.sort(compareFlows);
+}
+
+function askLine(rl, prompt) {
+  return new Promise((resolve) => rl.question(prompt, resolve));
+}
+
+async function askDate(rl, defaultDate) {
+  while (true) {
+    const value = (await askLine(rl, `날짜 [${defaultDate}]: `)).trim() || defaultDate;
+    try {
+      return parseDate(value);
+    } catch (error) {
+      console.log(error.message);
+    }
+  }
+}
+
+function parseInvestmentDirection(value) {
+  const normalized = normalizeText(value).replace(/\s/g, "");
+  if (["1", "입금", "은행→증권", "은행->증권"].includes(normalized)) {
+    return "투자입금";
+  }
+  if (["2", "출금", "증권→은행", "증권->은행"].includes(normalized)) {
+    return "투자출금";
+  }
+  return "";
+}
+
+function defaultFlowDate(existingHoldings, latestDate) {
+  const previousDate = existingHoldings
+    .map((row) => row.Date)
+    .filter((date) => date && date < latestDate)
+    .sort()
+    .at(-1);
+  if (!previousDate) {
+    return latestDate;
+  }
+
+  const start = Date.parse(`${previousDate}T00:00:00Z`);
+  const end = Date.parse(`${latestDate}T00:00:00Z`);
+  const midpoint = new Date(start + Math.floor((end - start) / 2));
+  return midpoint.toISOString().slice(0, 10);
+}
+
 function parseInputRows(inputText) {
   return extractCsvTexts(inputText).flatMap((csvText) => parseCsv(csvText));
 }
@@ -245,7 +418,10 @@ function isCsvHeaderLine(line) {
 
 function isCsvHeaderRow(row) {
   const canonical = row.map(canonicalHeader);
-  return canonical.includes("date") && canonical.includes("volume");
+  return (
+    (canonical.includes("date") && canonical.includes("volume")) ||
+    (canonical.includes("periodstart") && canonical.includes("periodend") && canonical.includes("monthlyreturn"))
+  );
 }
 
 function readCsvFile(filePath) {
@@ -265,6 +441,149 @@ function normalizeStoredRows(rows) {
       return normalized;
     })
     .filter((row) => row.Date && row.Volume);
+}
+
+function normalizeStoredFlows(rows) {
+  const allowedTypes = new Set(["외부유입", "외부유출", "투자입금", "투자출금"]);
+  return rows
+    .map((row) => ({
+      Date: normalizeText(row.Date),
+      "Flow Type": normalizeText(row["Flow Type"]),
+      "Securities Firm": normalizeText(row["Securities Firm"]),
+      Category: normalizeText(row.Category),
+      Note: normalizeText(row.Note),
+      Volume: String(parseVolume(row.Volume) || ""),
+    }))
+    .filter((row) => row.Date && allowedTypes.has(row["Flow Type"]) && Number(row.Volume) > 0)
+    .sort(compareFlows);
+}
+
+function normalizeCapitalBaselineRows(rows) {
+  return rows
+    .map((row) => ({
+      Date: normalizeText(row.Date),
+      Volume: String(parseVolume(row.Volume) || ""),
+    }))
+    .filter((row) => row.Date && Number(row.Volume) >= 0)
+    .sort((a, b) => a.Date.localeCompare(b.Date));
+}
+
+function normalizeInvestmentReturnRows(rows) {
+  return rows
+    .map((row) => ({
+      "Period Start": normalizeText(row["Period Start"]),
+      "Period End": normalizeText(row["Period End"]),
+      "Monthly Return": normalizeDecimal(row["Monthly Return"]),
+      "Cumulative Return": normalizeDecimal(row["Cumulative Return"]),
+      Confidence: normalizeText(row.Confidence) || "estimated",
+    }))
+    .filter((row) => row["Period Start"] && row["Period End"] && row["Monthly Return"] !== "")
+    .sort((a, b) => a["Period Start"].localeCompare(b["Period Start"]));
+}
+
+function normalizeDecimal(value) {
+  const number = Number(normalizeText(value));
+  return Number.isFinite(number) ? number.toFixed(10) : "";
+}
+
+function rebuildCapitalBaseline(existingRows, flowRows, holdingRows) {
+  if (!existingRows.length) {
+    return [];
+  }
+
+  const externalFlows = flowRows
+    .filter((row) => row["Flow Type"] === "외부유입" || row["Flow Type"] === "외부유출")
+    .sort(compareFlows);
+  const latestExisting = existingRows.at(-1);
+  const firstFlowDate = externalFlows[0]?.Date || "";
+  const anchor = firstFlowDate
+    ? existingRows.filter((row) => row.Date < firstFlowDate).at(-1) || latestExisting
+    : latestExisting;
+  const futureDates = new Set([
+    ...existingRows.filter((row) => row.Date > anchor.Date).map((row) => row.Date),
+    ...holdingRows.filter((row) => row.Date > anchor.Date).map((row) => row.Date),
+  ]);
+  const anchorValue = Number(anchor.Volume);
+  const rebuilt = [...existingRows.filter((row) => row.Date <= anchor.Date)];
+
+  for (const date of [...futureDates].sort()) {
+    const externalDelta = externalFlows
+      .filter((row) => row.Date > anchor.Date && row.Date <= date)
+      .reduce((sum, row) => sum + (row["Flow Type"] === "외부유입" ? 1 : -1) * Number(row.Volume), 0);
+    rebuilt.push({ Date: date, Volume: String(Math.max(0, Math.round(anchorValue + externalDelta))) });
+  }
+
+  return rebuilt;
+}
+
+function extendInvestmentReturns(existingRows, flowRows, holdingRows) {
+  if (!existingRows.length) {
+    return [];
+  }
+
+  const historicalRows = existingRows.filter((row) => row.Confidence !== "recorded");
+  const anchorRow = historicalRows.at(-1) || existingRows.at(-1);
+  const anchorDate = anchorRow["Period End"];
+  const snapshotDates = [...new Set(holdingRows.map((row) => row.Date).filter((date) => date >= anchorDate))].sort();
+  const result = [...historicalRows];
+  let cumulativeFactor = 1 + Number(anchorRow["Cumulative Return"]);
+
+  for (const [periodStart, periodEnd] of adjacentPairs(snapshotDates)) {
+    if (periodStart < anchorDate) {
+      continue;
+    }
+    const monthlyReturn = calculateRecordedInvestmentReturn(periodStart, periodEnd, holdingRows, flowRows);
+    if (monthlyReturn === null) {
+      continue;
+    }
+    cumulativeFactor *= 1 + monthlyReturn;
+    result.push({
+      "Period Start": periodStart,
+      "Period End": periodEnd,
+      "Monthly Return": monthlyReturn.toFixed(10),
+      "Cumulative Return": (cumulativeFactor - 1).toFixed(10),
+      Confidence: "recorded",
+    });
+  }
+  return result;
+}
+
+function adjacentPairs(values) {
+  return values.slice(0, -1).map((value, index) => [value, values[index + 1]]);
+}
+
+function calculateRecordedInvestmentReturn(periodStart, periodEnd, holdingRows, flowRows) {
+  const startValue = investmentValueAt(periodStart, holdingRows);
+  const endValue = investmentValueAt(periodEnd, holdingRows);
+  const startDay = Date.parse(`${periodStart}T00:00:00Z`);
+  const endDay = Date.parse(`${periodEnd}T00:00:00Z`);
+  const periodDays = Math.round((endDay - startDay) / 86400000);
+  if (!periodDays || startValue <= 0) {
+    return null;
+  }
+
+  const investmentFlows = flowRows
+    .filter((row) => ["투자입금", "투자출금"].includes(row["Flow Type"]))
+    .filter((row) => row.Date > periodStart && row.Date <= periodEnd)
+    .map((row) => ({
+      ...row,
+      signedAmount: (row["Flow Type"] === "투자입금" ? 1 : -1) * Number(row.Volume),
+    }));
+  const netFlow = investmentFlows.reduce((sum, row) => sum + row.signedAmount, 0);
+  const weightedFlow = investmentFlows.reduce((sum, row) => {
+    const flowDay = Date.parse(`${row.Date}T00:00:00Z`);
+    const remainingDays = Math.round((endDay - flowDay) / 86400000);
+    return sum + (remainingDays / periodDays) * row.signedAmount;
+  }, 0);
+  const denominator = startValue + weightedFlow;
+  return denominator > 1000 ? (endValue - startValue - netFlow) / denominator : null;
+}
+
+function investmentValueAt(date, holdingRows) {
+  return holdingRows
+    .filter((row) => row.Date === date)
+    .filter((row) => row["Securities Firm"] && !BANK_LIKE_FIRMS.has(row["Securities Firm"]))
+    .reduce((sum, row) => sum + Number(row.Volume || 0), 0);
 }
 
 function buildNormalizationContext(existingRows, rawInputRows) {
@@ -425,6 +744,29 @@ function mergeHoldings(existingRows, incomingRows) {
   return { rows: rows.sort(compareRows), stats };
 }
 
+function mergeFlows(existingRows, incomingRows) {
+  const rows = existingRows.map((row) => ({ ...row }));
+  const existingKeys = new Set(rows.map(flowKey));
+  const stats = { added: 0, unchanged: 0 };
+
+  for (const row of incomingRows) {
+    const key = flowKey(row);
+    if (existingKeys.has(key)) {
+      stats.unchanged += 1;
+      continue;
+    }
+    rows.push({ ...row });
+    existingKeys.add(key);
+    stats.added += 1;
+  }
+
+  return { rows: rows.sort(compareFlows), stats };
+}
+
+function flowKey(row) {
+  return FLOW_COLUMNS.map((column) => row[column] || "").join("|");
+}
+
 function holdingMergeKey(row) {
   return [row.Date, row["Securities Firm"], row.Ticker, row["Asset Type"]].join("|");
 }
@@ -438,7 +780,12 @@ function cloneRow(row) {
 }
 
 function commitAndMaybePush(options, latestDate) {
-  const relativePaths = ["data/portfolio-clean.csv", "data/portfolio-plans.csv"];
+  const relativePaths = [
+    "data/portfolio-clean.csv",
+    "data/portfolio-plans.csv",
+    "data/capital-baseline.csv",
+    "data/investment-returns.csv",
+  ];
   const message = options.message || `Update portfolio data${latestDate ? ` ${latestDate}` : ""}`;
 
   runGit(["add", "--", ...relativePaths]);
@@ -484,14 +831,27 @@ function normalizeFileText(filePath) {
   return fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
 }
 
-function printSummary(incoming, holdingStats, changes) {
+function printSummary(incoming, holdingStats, flowStats, changes, capitalBaseline, investmentReturns) {
   console.log(`Parsed ${incoming.holdings.length} holding rows.`);
   console.log(
     `Holdings merge: ${holdingStats.added} added, ${holdingStats.updated} updated, ${holdingStats.unchanged} unchanged.`,
   );
   console.log(
-    `CSV changes: holdings ${changes.holdingsChanged ? "yes" : "no"}, plans ${changes.plansChanged ? "yes" : "no"}.`,
+    `Cash flows: ${flowStats.added} added, ${flowStats.unchanged} already recorded.`,
   );
+  console.log(
+    `CSV changes: holdings ${changes.holdingsChanged ? "yes" : "no"}, plans ${changes.plansChanged ? "yes" : "no"}, private flows ${changes.flowsChanged ? "yes" : "no"}, baseline ${changes.capitalBaselineChanged ? "yes" : "no"}, returns ${changes.investmentReturnsChanged ? "yes" : "no"}.`,
+  );
+  const latestBaseline = capitalBaseline.at(-1);
+  if (latestBaseline) {
+    console.log(`Capital baseline at ${latestBaseline.Date}: ${Number(latestBaseline.Volume).toLocaleString("ko-KR")} KRW.`);
+  }
+  const latestReturn = investmentReturns.at(-1);
+  if (latestReturn) {
+    console.log(
+      `Pure investment return through ${latestReturn["Period End"]}: ${(Number(latestReturn["Cumulative Return"]) * 100).toFixed(1)}%.`,
+    );
+  }
 }
 
 function printSystemPrompt() {
@@ -739,6 +1099,17 @@ function compareRows(a, b) {
   );
 }
 
+function compareFlows(a, b) {
+  return (
+    a.Date.localeCompare(b.Date) ||
+    a["Flow Type"].localeCompare(b["Flow Type"], "ko") ||
+    a["Securities Firm"].localeCompare(b["Securities Firm"], "ko") ||
+    a.Category.localeCompare(b.Category, "ko") ||
+    a.Note.localeCompare(b.Note, "ko") ||
+    Number(a.Volume || 0) - Number(b.Volume || 0)
+  );
+}
+
 function getField(row, names) {
   const keys = Object.keys(row);
   const wanted = names.map(canonicalHeader);
@@ -845,6 +1216,7 @@ Options:
   --dry-run          Parse and merge, but do not write, commit, or push.
   --no-commit        Write CSV files, but do not commit or push.
   --no-push          Commit CSV files, but do not push.
+  --no-flows         Skip the monthly cash-flow questions.
   --prompt-only      Copy and print the LLM system prompt, then exit.
   -m, --message MSG  Override the git commit message.
 `);

@@ -323,6 +323,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chart-panel:hover, .workspace-panel:hover { border-color: rgba(218, 230, 224, 0.16); }
 .pie-panel { grid-column: span 4; min-height: 406px; }
 .line-panel { grid-column: span 8; min-height: 406px; }
+.return-panel { grid-column: span 12; }
 .hero-chart-panel, .allocation-panel { min-height: 474px; }
 
 .panel-header { display: flex; align-items: start; justify-content: space-between; gap: 18px; min-height: 38px; margin-bottom: 14px; }
@@ -363,6 +364,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .pie-canvas-frame canvas { position: relative; z-index: 2; display: block; width: 100% !important; height: 100% !important; }
 .line-frame { height: 330px; }
 .hero-line-frame { height: 388px; }
+.return-chart-stack { display: grid; gap: 18px; }
+.return-chart-section { min-width: 0; }
+.return-chart-label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 0.68rem; font-weight: 720; }
+.return-line-frame { height: 220px; }
 .line-frame.tall { height: 420px; }
 
 .capital-baseline-note {

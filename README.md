@@ -13,12 +13,12 @@ Open `http://127.0.0.1:8765/`.
 
 ## Repo Update Workflow
 
-Use the browser dashboard for viewing committed CSV data. Use the interactive importer when you want to add new screenshot-derived snapshots permanently:
+Use the browser dashboard for viewing committed CSV data. At the beginning of each month, use the interactive recorder to add screenshot-derived snapshots and the cash flows needed for return calculations:
 
-1. Double-click `import-paste.bat`, or run:
+1. Double-click `월초-자산기록.bat`, or run:
 
 ```powershell
-.\import-paste.bat
+.\월초-자산기록.bat
 ```
 
 2. Paste the clipboard system prompt into the LLM chat webpage.
@@ -26,8 +26,17 @@ Use the browser dashboard for viewing committed CSV data. Use the interactive im
 4. Paste the LLM data rows into the terminal.
 5. Repeat steps 3-4 for the next screenshots.
 6. Type `DONE` on its own line after the final pasted rows.
+7. Record external cash flows and bank-to-broker or broker-to-bank movements when prompted.
 
-The importer accumulates the pasted batches, normalizes the rows, merges holdings into `data/portfolio-clean.csv`, commits the CSV data files, and pushes the current git branch to `origin`.
+The recorder accumulates the pasted batches, normalizes the rows, merges holdings into `data/portfolio-clean.csv`, saves raw monthly flows locally under `private/monthly/portfolio-flows.csv`, extends the public baseline and pure-return series with derived values only, commits the public CSV data files, and pushes the current git branch to `origin`.
+
+Cash-flow rules:
+
+- External income or support is recorded as `외부유입`; pressing Enter at the category question uses `월급`.
+- Taxes, gifts, and other non-consumption external outflows may be recorded with a negative amount.
+- Bank-to-broker movements are `투자입금`; broker-to-bank movements are `투자출금`.
+- Ordinary consumption, bank-to-bank transfers, and broker-to-broker transfers are not needed for whole-portfolio return calculations.
+- If external money is paid directly into a brokerage account, record it once as an external inflow and once as an investment deposit. The two rows serve different calculations.
 
 Useful checks:
 
@@ -35,6 +44,7 @@ Useful checks:
 node tools/import-paste.mjs --prompt-only
 node tools/import-paste.mjs --dry-run
 node tools/import-paste.mjs --no-push
+node tools/import-paste.mjs --no-flows
 node tools/import-paste.mjs snapshot.csv --no-commit
 ```
 
@@ -118,7 +128,17 @@ node tools/clean-data.mjs path\to\source-export.csv
 It produces:
 
 - `data/portfolio-clean.csv`: actual holdings used by the dashboard
+- `data/capital-baseline.csv`: cash-only accumulation counterfactual, anchored to the 2020-03-01 pre-investment cash balance
+- `data/investment-returns.csv`: derived monthly pure-investment and cumulative returns
 - `data/portfolio-plans.csv`: archived source rows that had `Plans? = Yes`
+
+Raw income and investment-account transfer events stay in the git-ignored `private/monthly/portfolio-flows.csv`; they are not published to GitHub Pages.
+
+## Pure Investment Return
+
+`data/investment-returns.csv` contains monthly Modified Dietz returns. The historical series uses reconstructed month-start values for Namuh, Kiwoom, and Samsung brokerage accounts and removes dated external deposits and withdrawals. Trades, dividends, fees, and FX remain part of investment performance. KB and Daishin are excluded because their transaction histories were not imported.
+
+Future rows are extended by `월초-자산기록.bat` from the new month-start snapshot and the private `투자입금`/`투자출금` events entered at the end of the workflow. The dashboard plots monthly bars and a cumulative-return line.
 
 Cleaning rules:
 

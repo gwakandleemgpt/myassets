@@ -1,5 +1,7 @@
 const SOURCE_HOLDINGS = "data/portfolio-clean.csv";
 const SOURCE_CATALOG = "data/catalog.json";
+const SOURCE_CAPITAL_BASELINE = "data/capital-baseline.csv";
+const SOURCE_INVESTMENT_RETURNS = "data/investment-returns.csv";
 
 const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
 let ASSET_TYPES = [];
@@ -24,10 +26,6 @@ let FALLBACK_COLORS = [
 
 const KRW_PER_MAN = 10000;
 const MAN_PER_EOK = 10000;
-const CAPITAL_ANCHOR_DATE = "2025-03-28";
-const EARLY_MONTHLY_INCOME = 1550000;
-const MAY_2026_INCOME = 2250000;
-const CURRENT_MONTHLY_INCOME = 4200000;
 const DOUGHNUT_SCALE_ANIMATION_DURATION = 420;
 const DOUGHNUT_ROTATE_ANIMATION_DURATION = 520;
 const LINE_POINT_ANIMATION_DURATION = 620;
@@ -44,6 +42,8 @@ const unitNumberFormatter = new Intl.NumberFormat("ko-KR", {
 const state = {
   baseHoldings: [],
   holdings: [],
+  capitalBaseline: [],
+  investmentReturns: [],
   plans: [],
   dates: [],
   viewDate: "",
@@ -69,14 +69,18 @@ async function loadInitialData() {
   setStatus("Loading source CSV...");
 
   try {
-    const [catalogText, holdingsText] = await Promise.all([
+    const [catalogText, holdingsText, baselineText, investmentReturnsText] = await Promise.all([
       fetchText(SOURCE_CATALOG),
       fetchText(SOURCE_HOLDINGS),
+      fetchText(SOURCE_CAPITAL_BASELINE),
+      fetchText(SOURCE_INVESTMENT_RETURNS),
     ]);
     applyCatalog(JSON.parse(catalogText));
     populatePlanAssetTypes();
     state.baseHoldings = normalizeCsvText(holdingsText, { defaultPlan: "No" }).holdings;
     state.holdings = [...state.baseHoldings];
+    state.capitalBaseline = normalizeCapitalBaselineCsv(baselineText);
+    state.investmentReturns = normalizeInvestmentReturnsCsv(investmentReturnsText);
 
     refreshDataViews({ resetViewDate: true });
   } catch (error) {
@@ -451,56 +455,16 @@ function renderCapitalPerformance(actualTotal) {
   }
 
   byId("capitalBaselineNote").textContent = baseline.anchorObservation
-    ? `Capital baseline starts at the ${formatDateLabel(baseline.anchorObservation.date)} portfolio snapshot, including that day's income. It then adds 155만원 on each 28th from April 2025 through April 2026, 225만원 in May 2026, and 420만원 monthly from June 2026. This estimate assumes those earnings were fully added and there were no other deposits or withdrawals.`
-    : "Capital baseline will appear once a snapshot exists on or after March 28, 2025.";
+    ? `Cash-only baseline starts with the actual ${formatDateLabel(baseline.anchorObservation.date)} pre-investment cash. It then saves identified family support, school and military income, bank interest, and tax net flows without applying investment returns. Internal transfers and travel reimbursements are excluded; ordinary consumption is not reconstructed.`
+    : "Cash-only baseline will appear once the March 2020 pre-investment anchor is available.";
 }
 
 function buildCapitalBaseline() {
-  const actualPoints = pointsFromRows(state.holdings);
-  const anchorObservation = actualPoints.find((point) => point.date >= CAPITAL_ANCHOR_DATE) || null;
+  const anchorObservation = state.capitalBaseline[0] || null;
   if (!anchorObservation) {
     return { anchorObservation: null, points: [] };
   }
-
-  const points = actualPoints
-    .filter((point) => point.date >= anchorObservation.date)
-    .map((point) => ({
-      date: point.date,
-      value: anchorObservation.value + cumulativeIncomeThrough(point.date),
-    }));
-
-  return { anchorObservation, points };
-}
-
-function cumulativeIncomeThrough(targetDate) {
-  let total = 0;
-  let year = 2025;
-  let month = 4;
-
-  while (year < 2100) {
-    const payDate = `${year}-${String(month).padStart(2, "0")}-28`;
-    if (payDate > targetDate) {
-      break;
-    }
-    total += incomeForMonth(year, month);
-    month += 1;
-    if (month > 12) {
-      month = 1;
-      year += 1;
-    }
-  }
-
-  return total;
-}
-
-function incomeForMonth(year, month) {
-  if (year > 2026 || (year === 2026 && month >= 6)) {
-    return CURRENT_MONTHLY_INCOME;
-  }
-  if (year === 2026 && month === 5) {
-    return MAY_2026_INCOME;
-  }
-  return EARLY_MONTHLY_INCOME;
+  return { anchorObservation, points: state.capitalBaseline };
 }
 
 function renderAssetDistributionChart({ chartId, centerId, metaId, rows, animationMode = "scale" }) {
@@ -731,6 +695,133 @@ function renderLineCharts() {
     "valueTrendChart",
     lineChartConfig(timeline, tickerDatasets, { legendClickMode: "hideThenIsolate", legendHoverMode: "semiIsolate" }),
   );
+  renderInvestmentReturnChart();
+}
+
+function renderInvestmentReturnChart() {
+  const rows = state.investmentReturns;
+  if (!rows.length) {
+    return;
+  }
+
+  const latest = rows.at(-1);
+  const cumulativePercent = latest.cumulativeReturn * 100;
+  const elapsedDays = Math.max(
+    1,
+    Math.round((Date.parse(`${latest.periodEnd}T00:00:00Z`) - Date.parse(`${rows[0].periodStart}T00:00:00Z`)) / 86400000),
+  );
+  const annualizedPercent = (Math.pow(1 + latest.cumulativeReturn, 365 / elapsedDays) - 1) * 100;
+  const best = rows.reduce((current, row) => (row.monthlyReturn > current.monthlyReturn ? row : current), rows[0]);
+  const worst = rows.reduce((current, row) => (row.monthlyReturn < current.monthlyReturn ? row : current), rows[0]);
+  const cumulativeNode = byId("cumulativeReturn");
+
+  cumulativeNode.textContent = formatSignedPercent(cumulativePercent);
+  cumulativeNode.classList.toggle("is-positive", cumulativePercent > 0);
+  cumulativeNode.classList.toggle("is-negative", cumulativePercent < 0);
+  byId("annualizedReturn").textContent = `${formatSignedPercent(annualizedPercent)} annualized · since ${formatShortDateLabel(rows[0].periodStart)}`;
+  byId("investmentReturnNote").textContent =
+    `Estimated Modified Dietz return for Namuh, Kiwoom, and Samsung brokerage accounts. Account deposits and withdrawals are removed; trades, dividends, fees, and FX remain inside performance. ` +
+    `Best month ${formatShortDateLabel(best.periodStart)} ${formatSignedPercent(best.monthlyReturn * 100)} · worst ${formatShortDateLabel(worst.periodStart)} ${formatSignedPercent(worst.monthlyReturn * 100)}. ` +
+    `KB and Daishin are excluded because transaction histories were not imported; reconstructed historical values are accepted as final.`;
+
+  const returnXScale = (dateKey) => ({
+    grid: { display: false },
+    ticks: {
+      color: "#82909f",
+      autoSkip: true,
+      maxTicksLimit: window.innerWidth < 720 ? 6 : 12,
+      maxRotation: 0,
+      callback: (_value, index) => formatShortDateLabel(rows[index][dateKey]),
+    },
+  });
+
+  replaceChart("cumulativeReturnChart", {
+    type: "line",
+    data: {
+      labels: rows.map((row) => row.periodEnd),
+      datasets: [
+        {
+          label: "Cumulative return",
+          data: rows.map((row) => row.cumulativeReturn * 100),
+          borderColor: "#c7b8ff",
+          backgroundColor: "rgba(199, 184, 255, 0.12)",
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderWidth: 2,
+          fill: true,
+          tension: 0.24,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      animation: { duration: 420, easing: "easeOutCubic" },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => formatDateLabel(rows[items[0].dataIndex].periodEnd),
+            label: (item) => `Cumulative return: ${formatSignedPercent(Number(item.raw))}`,
+          },
+        },
+      },
+      scales: {
+        x: returnXScale("periodEnd"),
+        y: {
+          grid: {
+            color: (context) => (Number(context.tick.value) === 0 ? "rgba(199, 184, 255, 0.5)" : "rgba(218, 230, 224, 0.08)"),
+            lineWidth: (context) => (Number(context.tick.value) === 0 ? 1.5 : 1),
+          },
+          ticks: { color: "#82909f", callback: (value) => `${value}%` },
+        },
+      },
+    },
+  });
+
+  replaceChart("investmentReturnChart", {
+    type: "bar",
+    data: {
+      labels: rows.map((row) => row.periodStart),
+      datasets: [
+        {
+          label: "Monthly return",
+          data: rows.map((row) => row.monthlyReturn * 100),
+          backgroundColor: rows.map((row) =>
+            row.monthlyReturn >= 0 ? "rgba(143, 221, 160, 0.68)" : "rgba(248, 154, 154, 0.68)"
+          ),
+          borderWidth: 0,
+          borderRadius: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      animation: { duration: 420, easing: "easeOutCubic" },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => formatDateLabel(rows[items[0].dataIndex].periodStart),
+            label: (item) => `Monthly return: ${formatSignedPercent(Number(item.raw))}`,
+          },
+        },
+      },
+      scales: {
+        x: returnXScale("periodStart"),
+        y: {
+          grid: {
+            color: (context) => (Number(context.tick.value) === 0 ? "rgba(218, 230, 224, 0.36)" : "rgba(218, 230, 224, 0.08)"),
+            lineWidth: (context) => (Number(context.tick.value) === 0 ? 1.5 : 1),
+          },
+          ticks: { color: "#82909f", callback: (value) => `${value}%` },
+        },
+      },
+    },
+  });
 }
 
 function lineChartConfig(timeline, datasets, { legendClickMode = "default", legendHoverMode = "default", showLegend = true } = {}) {
@@ -1374,6 +1465,47 @@ function normalizeCsvText(text, { defaultPlan = "No" } = {}) {
     plans: plans.sort(compareRows),
     errors,
   };
+}
+
+function normalizeCapitalBaselineCsv(text) {
+  const parsed = Papa.parse(text.trim(), {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header) => header.trim(),
+  });
+  const points = parsed.data
+    .map((row) => ({
+      date: parseDate(getField(row, ["Date"])),
+      value: parseVolume(getField(row, ["Volume"])),
+    }))
+    .filter((point) => point.value !== null && point.value >= 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!points.length) {
+    throw new Error("capital baseline CSV has no usable rows");
+  }
+  return points;
+}
+
+function normalizeInvestmentReturnsCsv(text) {
+  const parsed = Papa.parse(text.trim(), {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header) => header.trim(),
+  });
+  const rows = parsed.data
+    .map((row) => ({
+      periodStart: parseDate(getField(row, ["Period Start"])),
+      periodEnd: parseDate(getField(row, ["Period End"])),
+      monthlyReturn: Number(getField(row, ["Monthly Return"])),
+      cumulativeReturn: Number(getField(row, ["Cumulative Return"])),
+      confidence: normalizeText(getField(row, ["Confidence"])),
+    }))
+    .filter((row) => Number.isFinite(row.monthlyReturn) && Number.isFinite(row.cumulativeReturn))
+    .sort((a, b) => a.periodStart.localeCompare(b.periodStart));
+  if (!rows.length) {
+    throw new Error("investment return CSV has no usable rows");
+  }
+  return rows;
 }
 
 function normalizeAssetType(row, ticker, majorityAssetTypes, isBalanceCash) {
