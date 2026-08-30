@@ -8,24 +8,27 @@
       name="description"
       content="A private portfolio command center for tracking growth, allocation, and future investment plans."
     />
-    <link rel="stylesheet" href="assets/styles.css?v=20260825f" />
+    <link rel="stylesheet" href="assets/styles.css?v=20260828ag" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
-    <script src="assets/app.js?v=20260825f" defer></script>
+    <script src="assets/app.js?v=20260828ag" defer></script>
   </head>
-  <body>
+  <body class="is-loading">
+    <div id="initialLoadingScreen" class="loading-screen" role="status" aria-live="polite" aria-atomic="true">
+      <div class="loading-panel">
+        <p class="loading-eyebrow">Asset Monitor</p>
+        <h2>Preparing your portfolio</h2>
+        <p id="initialLoadingMessage" class="loading-message">Loading snapshots, returns, and analysis…</p>
+        <div class="loading-progress" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <button id="initialLoadingRetry" class="loading-retry" type="button" hidden>Try again</button>
+      </div>
+    </div>
     <div class="app-shell">
-      <nav class="tabs view-tabs" aria-label="Primary views">
-        <button class="tab-button is-active" type="button" data-tab="dashboard" aria-selected="true">
-          <i data-lucide="chart-pie"></i>
-          <span>Overview</span>
-        </button>
-        <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
-          <i data-lucide="list-plus"></i>
-          <span>Plan</span>
-        </button>
-      </nav>
       <span id="dataStatus" class="sr-only" aria-live="polite">Loading portfolio...</span>
 
       <main>
@@ -36,7 +39,20 @@
               <h1>Your capital, clearly.</h1>
               <p class="page-lede">See what changed, where your money sits, and what deserves attention.</p>
             </div>
-            <p class="as-of-label"><span>As of</span><strong id="viewDateLabel">Latest snapshot</strong></p>
+            <nav class="tabs view-tabs" aria-label="Primary views">
+              <button class="tab-button is-active" type="button" data-tab="dashboard" aria-selected="true">
+                <i data-lucide="chart-pie"></i>
+                <span>Overview</span>
+              </button>
+              <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
+                <i data-lucide="list-plus"></i>
+                <span>Plan</span>
+              </button>
+              <button class="tab-button" type="button" data-tab="analysis" aria-selected="false">
+                <i data-lucide="scan-search"></i>
+                <span>Analysis</span>
+              </button>
+            </nav>
           </div>
 
           <div class="control-band">
@@ -63,46 +79,64 @@
               </div>
             </section>
 
-            <div class="timeline-control">
-              <label class="field field-date" for="dateSelect">
-                <span>Snapshot</span>
-                <select id="dateSelect"></select>
-              </label>
-              <div class="slider-wrap">
-                <span>Earlier</span>
-                <input id="dateSlider" class="date-slider" type="range" min="0" value="0" aria-label="Portfolio snapshot timeline" />
-                <span>Latest</span>
+            <section class="timeline-control" aria-labelledby="timelineHeading">
+              <header class="timeline-compact-heading">
+                <div class="timeline-heading">
+                  <div>
+                    <span id="timelineHeading">Viewing snapshot</span>
+                    <strong id="activeSnapshotLabel">Latest snapshot</strong>
+                  </div>
+                </div>
+                <button id="latestSnapshotBtn" class="latest-link" type="button">Latest</button>
+              </header>
+
+              <div class="timeline-picker-inline">
+                <label class="field compact-field" for="snapshotYearSelect">
+                  <span>Year</span>
+                  <select id="snapshotYearSelect" aria-label="Snapshot year"></select>
+                </label>
+                <div class="field compact-field month-field">
+                  <span>Month / date</span>
+                  <div class="snapshot-stepper">
+                    <button id="previousSnapshotBtn" class="icon-button" type="button" aria-label="Previous snapshot" title="Previous snapshot">
+                      <i data-lucide="chevron-left"></i>
+                    </button>
+                    <select id="snapshotMonthSelect" aria-label="Snapshot month and date"></select>
+                    <button id="nextSnapshotBtn" class="icon-button" type="button" aria-label="Next snapshot" title="Next snapshot">
+                      <i data-lucide="chevron-right"></i>
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div class="button-row">
-                <button id="resetDataBtn" class="text-button quiet-button" type="button" title="Reload source CSV">
-                  <i data-lucide="refresh-ccw"></i>
-                  <span>Refresh</span>
-                </button>
-                <button id="exportHoldingsBtn" class="text-button" type="button">
-                  <i data-lucide="download"></i>
-                  <span>Export CSV</span>
-                </button>
-              </div>
-            </div>
+
+              <p id="timelinePosition" class="timeline-position">Loading history…</p>
+
+            </section>
           </div>
 
           <section class="chart-grid" aria-label="Portfolio analysis">
             <article class="chart-panel line-panel hero-chart-panel">
               <header class="panel-header">
                 <div>
-                  <p class="panel-kicker">Growth</p>
-                  <h2>Net worth trajectory</h2>
+                  <p class="panel-kicker">Growth + exposure</p>
+                  <h2>Net worth &amp; invested capital</h2>
                 </div>
-                <div class="performance-readout">
-                  <span>Investment result</span>
-                  <strong id="investmentResult">—</strong>
-                  <small id="assetTrendMeta">Compared with capital baseline</small>
+                <div class="performance-cluster">
+                  <div class="performance-readout">
+                    <span>Market invested</span>
+                    <strong id="investedCapitalReadout">—</strong>
+                    <small id="investedShareMeta">Ticker-linked holdings</small>
+                  </div>
+                  <div class="performance-readout">
+                    <span>Result vs baseline</span>
+                    <strong id="investmentResult">—</strong>
+                    <small id="assetTrendMeta">Compared with capital baseline</small>
+                  </div>
                 </div>
               </header>
               <div class="line-frame hero-line-frame">
-                <canvas id="assetTrendChart"></canvas>
+                <canvas id="assetTrendChart" role="img" aria-label="Interactive net worth and invested capital timeline. Scroll to zoom, drag the x-axis to pan, or drag the plot to select a monthly snapshot." title="Scroll to zoom · drag the x-axis to pan · drag the plot to select a date"></canvas>
               </div>
-              <p id="capitalBaselineNote" class="capital-baseline-note"></p>
             </article>
 
             <article class="chart-panel pie-panel allocation-panel">
@@ -121,42 +155,24 @@
               </div>
             </article>
 
-            <section class="insight-strip" aria-label="Portfolio signals">
-              <article class="insight-card">
-                <div class="insight-icon"><i data-lucide="crosshair"></i></div>
+            <article class="chart-panel line-panel return-panel lower-wide-panel">
+              <header class="panel-header">
                 <div>
-                  <p>Largest position</p>
-                  <strong id="insightLargestPosition">—</strong>
-                  <span id="insightLargestPositionMeta">Waiting for snapshot</span>
+                  <p class="panel-kicker">Performance</p>
+                  <h2>Investment return</h2>
                 </div>
-              </article>
-              <article class="insight-card">
-                <div class="insight-icon"><i data-lucide="layers-3"></i></div>
-                <div>
-                  <p>Leading allocation</p>
-                  <strong id="insightLargestAllocation">—</strong>
-                  <span id="insightLargestAllocationMeta">Waiting for snapshot</span>
+                <div class="performance-readout">
+                  <span>Cumulative return</span>
+                  <strong id="cumulativeReturn">—</strong>
+                  <small id="annualizedReturn">Waiting for return history</small>
                 </div>
-              </article>
-              <article class="insight-card">
-                <div class="insight-icon"><i data-lucide="landmark"></i></div>
-                <div>
-                  <p>Account footprint</p>
-                  <strong id="insightInstitutions">—</strong>
-                  <span id="insightInstitutionsMeta">Across connected institutions</span>
-                </div>
-              </article>
-            </section>
-
-            <div class="section-divider">
-              <div>
-                <p class="eyebrow">Deep dive</p>
-                <h2>Portfolio detail</h2>
+              </header>
+              <div class="line-frame return-combined-frame">
+                <canvas id="investmentReturnChart"></canvas>
               </div>
-              <p>Hover or select a legend to focus the charts.</p>
-            </div>
+            </article>
 
-            <article class="chart-panel pie-panel">
+            <article class="chart-panel pie-panel lower-narrow-panel position-panel">
               <header class="panel-header">
                 <div>
                   <p class="panel-kicker">Holdings</p>
@@ -172,33 +188,41 @@
               </div>
             </article>
 
-            <article class="chart-panel line-panel">
+            <article class="chart-panel line-panel lower-wide-panel detail-trend-panel">
               <header class="panel-header">
                 <div>
                   <p class="panel-kicker">Comparison</p>
                   <h2>Holding trajectories</h2>
                 </div>
-                <span>All positions · select to isolate</span>
+                <button id="holdingLegendToggle" class="text-button holding-legend-toggle" type="button" aria-expanded="false" aria-controls="holdingLegendDrawer">
+                  <i data-lucide="list-filter"></i>
+                  <span id="holdingLegendToggleLabel">Browse holdings</span>
+                  <i class="holding-toggle-chevron" data-lucide="chevron-down"></i>
+                </button>
               </header>
               <div class="line-frame">
-                <canvas id="valueTrendChart"></canvas>
+                <canvas id="valueTrendChart" role="img" aria-label="Interactive trajectories for major holdings and holdings in the selected month. Scroll to zoom, drag the x-axis to pan, or drag the plot to select a monthly snapshot." title="Scroll to zoom · drag the x-axis to pan · drag the plot to select a date"></canvas>
               </div>
-            </article>
-
-            <article class="chart-panel line-panel">
-              <header class="panel-header">
-                <div>
-                  <p class="panel-kicker">Exposure</p>
-                  <h2>Invested capital</h2>
+              <div id="holdingLegendBrowser" class="holding-legend-browser">
+                <div class="holding-legend-summary">
+                  <span id="holdingLegendCaption" class="holding-legend-caption">Major + selected month</span>
+                  <div id="holdingLegendFeatured" class="holding-legend-featured" aria-label="Major holdings and holdings in the selected month"></div>
                 </div>
-                <span>Ticker-linked holdings only</span>
-              </header>
-              <div class="line-frame">
-                <canvas id="investmentTrendChart"></canvas>
+                <div id="holdingLegendDrawer" class="holding-legend-drawer" hidden>
+                  <div class="holding-legend-drawer-head">
+                    <label class="holding-legend-search" for="holdingLegendSearch">
+                      <i data-lucide="search"></i>
+                      <input id="holdingLegendSearch" type="search" placeholder="Find a ticker" autocomplete="off" />
+                    </label>
+                    <button id="holdingLegendClear" class="text-button quiet-button" type="button">Show all</button>
+                  </div>
+                  <div id="holdingLegendList" class="holding-legend-list" aria-label="Relevant holding legends"></div>
+                  <p id="holdingLegendEmpty" class="holding-legend-empty" hidden>No matching ticker</p>
+                </div>
               </div>
             </article>
 
-            <article class="chart-panel pie-panel">
+            <article class="chart-panel pie-panel lower-narrow-panel institution-panel">
               <header class="panel-header">
                 <div>
                   <p class="panel-kicker">Custody</p>
@@ -213,35 +237,6 @@
                 </div>
               </div>
             </article>
-
-            <article class="chart-panel line-panel return-panel">
-              <header class="panel-header">
-                <div>
-                  <p class="panel-kicker">Performance</p>
-                  <h2>Monthly pure investment return</h2>
-                </div>
-                <div class="performance-readout">
-                  <span>Cumulative return</span>
-                  <strong id="cumulativeReturn">—</strong>
-                  <small id="annualizedReturn">Waiting for return history</small>
-                </div>
-              </header>
-              <div class="return-chart-stack">
-                <div class="return-chart-section">
-                  <span class="return-chart-label">Cumulative return</span>
-                  <div class="line-frame return-line-frame">
-                    <canvas id="cumulativeReturnChart"></canvas>
-                  </div>
-                </div>
-                <div class="return-chart-section">
-                  <span class="return-chart-label">Monthly return</span>
-                  <div class="line-frame return-line-frame">
-                    <canvas id="investmentReturnChart"></canvas>
-                  </div>
-                </div>
-              </div>
-              <p id="investmentReturnNote" class="capital-baseline-note"></p>
-            </article>
           </section>
         </section>
 
@@ -252,10 +247,20 @@
               <h1>Design what comes next.</h1>
               <p class="page-lede">Turn your latest portfolio into a working target and see every required move.</p>
             </div>
-            <div class="plan-status-chip">
-              <span class="status-dot" aria-hidden="true"></span>
-              <strong id="planStatus">Based on latest snapshot</strong>
-            </div>
+            <nav class="tabs view-tabs" aria-label="Primary views">
+              <button class="tab-button" type="button" data-tab="dashboard" aria-selected="false">
+                <i data-lucide="chart-pie"></i>
+                <span>Overview</span>
+              </button>
+              <button class="tab-button is-active" type="button" data-tab="plans" aria-selected="true">
+                <i data-lucide="list-plus"></i>
+                <span>Plan</span>
+              </button>
+              <button class="tab-button" type="button" data-tab="analysis" aria-selected="false">
+                <i data-lucide="scan-search"></i>
+                <span>Analysis</span>
+              </button>
+            </nav>
           </div>
 
           <section class="plan-pulse" aria-label="Plan summary">
@@ -263,6 +268,7 @@
               <span>Planned total</span>
               <strong id="metricPlanTotal">—</strong>
               <small>Target portfolio value</small>
+              <p id="planStatus" class="plan-baseline-chip">Based on latest snapshot</p>
             </div>
             <div class="plan-metric">
               <span>Change required</span>
@@ -368,6 +374,184 @@
                 </table>
               </div>
             </section>
+          </div>
+        </section>
+
+        <section id="analysis" class="tab-panel">
+          <div class="page-heading analysis-page-heading">
+            <div>
+              <p class="eyebrow">Periodic portfolio review</p>
+              <h1>Decisions, with context.</h1>
+              <p class="page-lede">정기 분석을 날짜별로 보존하고, 성과·위험·데이터 보강 과제를 한 흐름으로 살펴봅니다.</p>
+            </div>
+            <nav class="tabs view-tabs" aria-label="Primary views">
+              <button class="tab-button" type="button" data-tab="dashboard" aria-selected="false">
+                <i data-lucide="chart-pie"></i>
+                <span>Overview</span>
+              </button>
+              <button class="tab-button" type="button" data-tab="plans" aria-selected="false">
+                <i data-lucide="list-plus"></i>
+                <span>Plan</span>
+              </button>
+              <button class="tab-button is-active" type="button" data-tab="analysis" aria-selected="true">
+                <i data-lucide="scan-search"></i>
+                <span>Analysis</span>
+              </button>
+            </nav>
+          </div>
+
+          <div class="analysis-layout">
+            <aside class="analysis-archive" aria-label="Analysis archive">
+              <div class="analysis-archive-heading">
+                <div>
+                  <p class="panel-kicker">Archive</p>
+                  <h2>분석 기록</h2>
+                </div>
+                <span id="analysisArchiveCount">—</span>
+              </div>
+              <label class="field analysis-mobile-select" for="analysisReportSelect">
+                <span>분석 선택</span>
+                <select id="analysisReportSelect"></select>
+              </label>
+              <div id="analysisArchiveList" class="analysis-archive-list"></div>
+              <p class="analysis-archive-note">새 분석은 이 목록에 최신순으로 누적됩니다.</p>
+            </aside>
+
+            <div class="analysis-report">
+              <article class="analysis-hero">
+                <div class="analysis-hero-copy">
+                  <div class="analysis-report-meta">
+                    <span id="analysisReportDate">—</span>
+                    <span id="analysisReportAsOf">—</span>
+                  </div>
+                  <h2 id="analysisReportTitle">분석을 불러오는 중입니다.</h2>
+                  <p id="analysisReportSubtitle"></p>
+                  <div id="analysisReportTags" class="analysis-tag-list"></div>
+                </div>
+                <div class="analysis-verdict">
+                  <span>판단</span>
+                  <strong id="analysisVerdictTitle">—</strong>
+                  <p id="analysisVerdictCopy"></p>
+                </div>
+              </article>
+
+              <section id="analysisMetricStrip" class="analysis-metric-strip" aria-label="Analysis summary"></section>
+
+              <section class="analysis-section">
+                <div class="analysis-section-heading">
+                  <div>
+                    <p class="panel-kicker">Investment journey</p>
+                    <h2>투자가 흘러온 세 구간</h2>
+                  </div>
+                  <span>수익보다 전략 변화에 초점을 둡니다.</span>
+                </div>
+                <div id="analysisPhaseTimeline" class="analysis-phase-timeline"></div>
+              </section>
+
+              <div class="analysis-chart-grid">
+                <article class="analysis-card analysis-chart-card">
+                  <div class="analysis-card-heading">
+                    <div>
+                      <p class="panel-kicker">Return profile</p>
+                      <h2>연도별 순수 투자수익</h2>
+                    </div>
+                    <span id="analysisReturnMeta">—</span>
+                  </div>
+                  <div class="analysis-chart-frame">
+                    <canvas id="analysisAnnualReturnChart"></canvas>
+                  </div>
+                </article>
+
+                <article class="analysis-card analysis-chart-card analysis-allocation-card">
+                  <div class="analysis-card-heading">
+                    <div>
+                      <p class="panel-kicker">Risk transition</p>
+                      <h2>연말 자산구조 변화</h2>
+                    </div>
+                    <span>총자산 비중</span>
+                  </div>
+                  <div class="analysis-chart-frame">
+                    <canvas id="analysisAllocationHistoryChart"></canvas>
+                  </div>
+                </article>
+              </div>
+
+              <div class="analysis-chart-grid analysis-detail-grid">
+                <article class="analysis-card">
+                  <div class="analysis-card-heading">
+                    <div>
+                      <p class="panel-kicker">Current structure</p>
+                      <h2>지금의 포트폴리오</h2>
+                    </div>
+                    <span id="analysisAllocationMeta">—</span>
+                  </div>
+                  <div id="analysisAllocationList" class="analysis-allocation-list"></div>
+                  <div id="analysisConcentrationNote" class="analysis-inline-note"></div>
+                </article>
+
+                <article class="analysis-card">
+                  <div class="analysis-card-heading">
+                    <div>
+                      <p class="panel-kicker">Return dependency</p>
+                      <h2>성과의 모양</h2>
+                    </div>
+                    <span>월별 복리 기준</span>
+                  </div>
+                  <div id="analysisReturnShape" class="analysis-return-shape"></div>
+                </article>
+              </div>
+
+              <section class="analysis-section analysis-reading-section">
+                <div class="analysis-section-heading">
+                  <div>
+                    <p class="panel-kicker">Reading</p>
+                    <h2>이번 분석의 해석</h2>
+                  </div>
+                </div>
+                <div class="analysis-reading-grid">
+                  <article>
+                    <div class="analysis-reading-title"><i data-lucide="thumbs-up"></i><h3>잘한 점</h3></div>
+                    <ul id="analysisStrengths"></ul>
+                  </article>
+                  <article>
+                    <div class="analysis-reading-title"><i data-lucide="triangle-alert"></i><h3>경계할 점</h3></div>
+                    <ul id="analysisRisks"></ul>
+                  </article>
+                </div>
+              </section>
+
+              <section class="analysis-section analysis-data-section">
+                <div class="analysis-section-heading">
+                  <div>
+                    <p class="panel-kicker">Evidence ledger</p>
+                    <h2>데이터 완성도와 다음 자료</h2>
+                  </div>
+                  <span id="analysisDataStatus">—</span>
+                </div>
+                <p id="analysisDataSummary" class="analysis-section-intro"></p>
+                <div class="analysis-data-grid">
+                  <article class="analysis-coverage-panel">
+                    <h3>계좌별 원장 범위</h3>
+                    <div id="analysisCoverageList" class="analysis-coverage-list"></div>
+                  </article>
+                  <article class="analysis-request-panel">
+                    <h3>우선 확보할 자료</h3>
+                    <div id="analysisRequestList" class="analysis-request-list"></div>
+                  </article>
+                </div>
+                <div id="analysisPrivacyNote" class="analysis-privacy-note"></div>
+              </section>
+
+              <section class="analysis-section analysis-actions-section">
+                <div class="analysis-section-heading">
+                  <div>
+                    <p class="panel-kicker">Next review</p>
+                    <h2>다음 분석까지 볼 것</h2>
+                  </div>
+                </div>
+                <ol id="analysisNextActions" class="analysis-next-actions"></ol>
+              </section>
+            </div>
           </div>
         </section>
       </main>

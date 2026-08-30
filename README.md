@@ -48,6 +48,19 @@ node tools/import-paste.mjs --no-flows
 node tools/import-paste.mjs snapshot.csv --no-commit
 ```
 
+Supplemental Kiwoom transaction exports use a three-row record format and can be
+merged into the private reconstruction ledger with:
+
+```powershell
+python tools/import-kiwoom-csv.py path\to\키움.csv --dry-run
+python tools/import-kiwoom-csv.py path\to\키움.csv
+python tools/build-investment-returns.py
+```
+
+The importer accepts CP949 or UTF-8 exports, skips overlapping transactions, and
+archives a UTF-8 copy under the git-ignored `private/source/` directory. Review
+the reported external flows before rebuilding the public return series.
+
 Interactive commands:
 
 - `END`: optional legacy command; no longer needed.
@@ -84,6 +97,21 @@ node tools/catalog-ui.mjs --no-commit
 ## Future Plan
 
 The Future Plan tab starts as an editable copy of the latest actual holdings snapshot. It does not load `data/portfolio-plans.csv` on startup. Brokerage/firm is ignored in the working plan, so rows are merged by asset type and ticker. Edit volumes directly in the table, remove rows with `X`, add new rows from the form, or use `Reset latest` to rebuild the working plan from the latest snapshot.
+
+## Periodic Analysis Archive
+
+The Analysis tab loads dated portfolio reviews from `data/analysis-reports.json`. Reports are sorted newest first and keep their original conclusions and headline metrics, while annual-return and allocation-history charts are rebuilt from the portfolio CSV files only through each report's `asOf` date.
+
+For every new periodic review, append one object to the `reports` array instead of replacing the prior report. Each report should have a unique `id` plus:
+
+- `publishedAt` and `asOf`
+- Title, subtitle, tags, and verdict
+- Frozen headline metrics and investment phases
+- Current allocation, concentration, strengths, and risks
+- Data coverage, requested source files, and privacy guidance
+- Actions to revisit at the next review
+
+This keeps the Analysis page useful as a chronological decision journal rather than a single dashboard summary that changes whenever the underlying holdings CSV is updated.
 
 ## LLM Output Format
 

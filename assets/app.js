@@ -2,6 +2,7 @@ const SOURCE_HOLDINGS = "data/portfolio-clean.csv";
 const SOURCE_CATALOG = "data/catalog.json";
 const SOURCE_CAPITAL_BASELINE = "data/capital-baseline.csv";
 const SOURCE_INVESTMENT_RETURNS = "data/investment-returns.csv";
+const SOURCE_ANALYSIS_REPORTS = "data/analysis-reports.json";
 
 const OUTPUT_COLUMNS = ["Date", "Asset Type", "Securities Firm", "Ticker", "Volume"];
 let ASSET_TYPES = [];
@@ -35,6 +36,11 @@ const LINE_BASE_BORDER_WIDTH = 1.8;
 const LINE_HOVER_BORDER_WIDTH = 2.8;
 const LINE_DIM_BORDER_WIDTH = 0.9;
 const LINE_POINT_BORDER_WIDTH = 1.8;
+const LINE_ZOOM_MIN_WINDOW_DAYS = 45;
+const LINE_ZOOM_WHEEL_SPEED = 0.0015;
+const HOLDING_TRAJECTORY_MIN_VALUE = 1000000;
+const HOLDING_TRAJECTORY_MIN_OBSERVATIONS = 4;
+const HOLDING_TRAJECTORY_MAJOR_COUNT = 6;
 const unitNumberFormatter = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 0,
 });
@@ -44,10 +50,14 @@ const state = {
   holdings: [],
   capitalBaseline: [],
   investmentReturns: [],
+  analysisReports: [],
+  selectedAnalysisId: "",
   plans: [],
   dates: [],
   viewDate: "",
   charts: {},
+  holdingFocusTicker: "",
+  holdingLegendExpanded: false,
   suppressLineAnimations: false,
   lineAnimationGraceUntil: 0,
   resizeAnimationTimer: 0,
@@ -60,31 +70,85 @@ async function init() {
   wireResizeAnimationGuard();
   wireTabs();
   wireDashboardControls();
+  wireHoldingLegendControls();
   wirePlanControls();
-  await loadInitialData();
-  renderIcons();
+  wireAnalysisControls();
+  const loaded = await loadInitialData();
+  if (loaded) {
+    renderIcons();
+    await hideInitialLoadingScreen();
+  }
 }
 
 async function loadInitialData() {
   setStatus("Loading source CSV...");
 
   try {
-    const [catalogText, holdingsText, baselineText, investmentReturnsText] = await Promise.all([
+    const [catalogText, holdingsText, baselineText, investmentReturnsText, analysisReportsText] = await Promise.all([
       fetchText(SOURCE_CATALOG),
       fetchText(SOURCE_HOLDINGS),
       fetchText(SOURCE_CAPITAL_BASELINE),
       fetchText(SOURCE_INVESTMENT_RETURNS),
+      fetchText(SOURCE_ANALYSIS_REPORTS),
     ]);
+    setInitialLoadingMessage("Building charts and portfolio views…");
     applyCatalog(JSON.parse(catalogText));
     populatePlanAssetTypes();
     state.baseHoldings = normalizeCsvText(holdingsText, { defaultPlan: "No" }).holdings;
     state.holdings = [...state.baseHoldings];
     state.capitalBaseline = normalizeCapitalBaselineCsv(baselineText);
     state.investmentReturns = normalizeInvestmentReturnsCsv(investmentReturnsText);
+    state.analysisReports = normalizeAnalysisReports(analysisReportsText);
+    state.selectedAnalysisId = state.analysisReports[0]?.id || "";
 
     refreshDataViews({ resetViewDate: true });
+    return true;
   } catch (error) {
     setStatus(`Could not load CSV: ${error.message}`);
+    showInitialLoadingError(error);
+    return false;
+  }
+}
+
+function setInitialLoadingMessage(message) {
+  const messageNode = byId("initialLoadingMessage");
+  if (messageNode) {
+    messageNode.textContent = message;
+  }
+}
+
+function nextPaint() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function hideInitialLoadingScreen() {
+  const screen = byId("initialLoadingScreen");
+  if (!screen) {
+    return;
+  }
+
+  setInitialLoadingMessage("Portfolio ready");
+  await nextPaint();
+  await nextPaint();
+  screen.classList.add("is-complete");
+  screen.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("is-loading");
+  screen.addEventListener("transitionend", () => screen.remove(), { once: true });
+}
+
+function showInitialLoadingError(error) {
+  const screen = byId("initialLoadingScreen");
+  const retryButton = byId("initialLoadingRetry");
+  if (!screen) {
+    return;
+  }
+
+  screen.classList.add("is-error");
+  screen.setAttribute("role", "alert");
+  setInitialLoadingMessage(`We couldn't load your portfolio. ${error.message}`);
+  if (retryButton) {
+    retryButton.hidden = false;
+    retryButton.addEventListener("click", () => window.location.reload(), { once: true });
   }
 }
 
@@ -167,7 +231,7 @@ function wireTabs() {
     button.addEventListener("click", () => {
       const tabId = button.dataset.tab;
       document.querySelectorAll(".tab-button").forEach((item) => {
-        const isActive = item === button;
+        const isActive = item.dataset.tab === tabId;
         item.classList.toggle("is-active", isActive);
         item.setAttribute("aria-selected", String(isActive));
       });
@@ -179,10 +243,33 @@ function wireTabs() {
           renderDashboard({ updateLines: true, doughnutAnimation: "scale" });
         } else if (tabId === "plans") {
           renderPlanWorkspace({ doughnutAnimation: "scale" });
+        } else if (tabId === "analysis") {
+          renderAnalysisArchive({ renderCharts: true });
         }
       });
     });
   });
+}
+
+function wireAnalysisControls() {
+  byId("analysisArchiveList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-analysis-id]");
+    if (button) {
+      selectAnalysisReport(button.dataset.analysisId);
+    }
+  });
+
+  byId("analysisReportSelect").addEventListener("change", (event) => {
+    selectAnalysisReport(event.target.value);
+  });
+}
+
+function selectAnalysisReport(reportId) {
+  if (!state.analysisReports.some((report) => report.id === reportId)) {
+    return;
+  }
+  state.selectedAnalysisId = reportId;
+  renderAnalysisArchive({ renderCharts: activeTabId() === "analysis" });
 }
 
 function wireResizeAnimationGuard() {
@@ -217,25 +304,202 @@ function suppressLineAnimationsForResize() {
 }
 
 function wireDashboardControls() {
-  byId("dateSelect").addEventListener("change", (event) => {
-    state.viewDate = event.target.value;
-    syncDateControls();
-    renderDashboard({ updateLines: false, doughnutAnimation: "rotate" });
+  byId("snapshotYearSelect").addEventListener("change", (event) => {
+    const yearDates = state.dates.filter((date) => date.startsWith(`${event.target.value}-`));
+    const activeMonth = state.viewDate.slice(5, 7);
+    const sameMonthDates = yearDates.filter((date) => date.slice(5, 7) === activeMonth);
+    selectDashboardSnapshot(sameMonthDates[sameMonthDates.length - 1] || yearDates[yearDates.length - 1]);
   });
 
-  byId("dateSlider").addEventListener("input", (event) => {
-    state.viewDate = state.dates[Number(event.target.value)] || state.viewDate;
-    syncDateControls();
-    renderDashboard({ updateLines: false, doughnutAnimation: "rotate" });
+  byId("snapshotMonthSelect").addEventListener("change", (event) => {
+    selectDashboardSnapshot(event.target.value);
   });
 
-  byId("resetDataBtn").addEventListener("click", async () => {
-    await loadInitialData();
+  byId("previousSnapshotBtn").addEventListener("click", () => stepSnapshot(-1));
+  byId("nextSnapshotBtn").addEventListener("click", () => stepSnapshot(1));
+  byId("latestSnapshotBtn").addEventListener("click", () => selectDashboardSnapshot(latestDataDate()));
+
+  function stepSnapshot(direction) {
+    const currentIndex = Math.max(state.dates.indexOf(state.viewDate), 0);
+    const targetIndex = Math.min(Math.max(currentIndex + direction, 0), Math.max(state.dates.length - 1, 0));
+    selectDashboardSnapshot(state.dates[targetIndex]);
+  }
+
+}
+
+function selectDashboardSnapshot(date) {
+  if (!date || date === state.viewDate || !state.dates.includes(date)) {
+    return false;
+  }
+  state.viewDate = date;
+  syncDateControls();
+  renderDashboard({ updateLines: false, doughnutAnimation: "morph" });
+  ["assetTrendChart", "investmentReturnChart"].forEach((chartId) => {
+    state.charts[chartId]?.update("none");
+  });
+  const holdingChart = state.charts.valueTrendChart;
+  if (holdingChart) {
+    renderHoldingLegend(holdingChart.data.datasets);
+  }
+  return true;
+}
+
+function wireHoldingLegendControls() {
+  const browser = byId("holdingLegendBrowser");
+  const drawer = byId("holdingLegendDrawer");
+  const toggle = byId("holdingLegendToggle");
+  const search = byId("holdingLegendSearch");
+
+  toggle.addEventListener("click", () => {
+    state.holdingLegendExpanded = !state.holdingLegendExpanded;
+    drawer.hidden = !state.holdingLegendExpanded;
+    toggle.setAttribute("aria-expanded", String(state.holdingLegendExpanded));
+    toggle.classList.toggle("is-expanded", state.holdingLegendExpanded);
+    if (state.holdingLegendExpanded) {
+      requestAnimationFrame(() => search.focus());
+    }
   });
 
-  byId("exportHoldingsBtn").addEventListener("click", () => {
-    downloadCsv("portfolio-clean.csv", state.holdings);
+  search.addEventListener("input", syncHoldingLegendSearch);
+  byId("holdingLegendClear").addEventListener("click", () => setHoldingFocus(""));
+
+  browser.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-holding-ticker]");
+    if (item) {
+      setHoldingFocus(item.dataset.holdingTicker);
+    }
   });
+
+  browser.addEventListener("mouseover", (event) => {
+    const item = event.target.closest("[data-holding-ticker]");
+    if (!item || state.holdingFocusTicker) {
+      return;
+    }
+    const chart = state.charts.valueTrendChart;
+    const datasetIndex = chart?.data.datasets.findIndex((dataset) => dataset.label === item.dataset.holdingTicker) ?? -1;
+    if (chart && datasetIndex >= 0) {
+      semiIsolateLineLegendHover(null, { datasetIndex }, { chart });
+    }
+  });
+
+  browser.addEventListener("mouseout", (event) => {
+    const item = event.target.closest("[data-holding-ticker]");
+    if (!item || item.contains(event.relatedTarget) || state.holdingFocusTicker) {
+      return;
+    }
+    const chart = state.charts.valueTrendChart;
+    if (chart) {
+      semiIsolateLineLegendLeave(null, null, { chart });
+    }
+  });
+}
+
+function renderHoldingLegend(datasets) {
+  const records = holdingLegendRecords(datasets);
+  const relevantTickers = new Set(records.map((record) => record.ticker));
+  const chart = state.charts.valueTrendChart;
+
+  if (state.holdingFocusTicker && !relevantTickers.has(state.holdingFocusTicker)) {
+    state.holdingFocusTicker = "";
+  }
+
+  byId("holdingLegendCaption").textContent = `Major + ${formatShortDateLabel(state.viewDate)}`;
+  byId("holdingLegendFeatured").innerHTML = records
+    .map((record) => holdingLegendItemMarkup(record, true))
+    .join("");
+  byId("holdingLegendList").innerHTML = records
+    .map((record) => holdingLegendItemMarkup(record, false))
+    .join("");
+  byId("holdingLegendSearch").value = "";
+  syncHoldingLegendSearch();
+  if (chart) {
+    chart.data.datasets.forEach((dataset, index) => {
+      const isVisible = state.holdingFocusTicker
+        ? dataset.label === state.holdingFocusTicker
+        : true;
+      chart.setDatasetVisibility(index, isVisible);
+    });
+    chart.$holdingLegendCount = records.length;
+    chart.update("none");
+  }
+  syncHoldingLegendControls(records.length);
+}
+
+function holdingLegendRecords(datasets) {
+  const records = datasets.map((dataset) => {
+    const selectedPoint = (dataset.data || []).find((point) => point.date === state.viewDate);
+    return {
+      ticker: dataset.label,
+      color: dataset.baseColor || dataset.borderColor,
+      isMajor: Boolean(dataset.isMajorHolding),
+      peakValue: Number(dataset.trajectoryPeakValue || 0),
+      selectedValue: Number(selectedPoint?.y || 0),
+    };
+  });
+  const major = records
+    .filter((record) => record.isMajor)
+    .sort((a, b) => b.peakValue - a.peakValue || a.ticker.localeCompare(b.ticker));
+  const selected = records
+    .filter((record) => record.selectedValue >= HOLDING_TRAJECTORY_MIN_VALUE)
+    .sort((a, b) => b.selectedValue - a.selectedValue || a.ticker.localeCompare(b.ticker));
+  const combined = [...major];
+  const seen = new Set(major.map((record) => record.ticker));
+  selected.forEach((record) => {
+    if (!seen.has(record.ticker)) {
+      combined.push(record);
+      seen.add(record.ticker);
+    }
+  });
+  return combined;
+}
+
+function holdingLegendItemMarkup(record, featured) {
+  const valueLabel = record.selectedValue
+    ? `${formatShortDateLabel(state.viewDate)} ${formatCurrency(record.selectedValue)}`
+    : `Peak ${formatCurrency(record.peakValue)}`;
+  return `<button class="holding-legend-item${featured ? " is-featured" : ""}" type="button" data-holding-ticker="${escapeHtml(record.ticker)}" style="--holding-color: ${escapeHtml(record.color)}" title="${escapeHtml(`${record.ticker} · ${valueLabel}`)}">
+    <span class="holding-legend-swatch" aria-hidden="true"></span>
+    <span>${escapeHtml(record.ticker)}</span>
+  </button>`;
+}
+
+function setHoldingFocus(ticker, { force = false } = {}) {
+  const chart = state.charts.valueTrendChart;
+  if (!chart) {
+    return;
+  }
+
+  semiIsolateLineLegendLeave(null, null, { chart });
+  const nextTicker = !force && ticker && state.holdingFocusTicker === ticker ? "" : ticker;
+  state.holdingFocusTicker = nextTicker;
+  const relevantTickers = new Set(holdingLegendRecords(chart.data.datasets).map((record) => record.ticker));
+  chart.data.datasets.forEach((dataset, index) => {
+    chart.setDatasetVisibility(index, nextTicker ? dataset.label === nextTicker : true);
+  });
+  chart.update("none");
+  syncHoldingLegendControls(relevantTickers.size);
+}
+
+function syncHoldingLegendControls(total = state.charts.valueTrendChart?.$holdingLegendCount || 0) {
+  document.querySelectorAll("[data-holding-ticker]").forEach((item) => {
+    item.classList.toggle("is-active", Boolean(state.holdingFocusTicker) && item.dataset.holdingTicker === state.holdingFocusTicker);
+    item.classList.toggle("is-muted", Boolean(state.holdingFocusTicker) && item.dataset.holdingTicker !== state.holdingFocusTicker);
+  });
+  byId("holdingLegendToggleLabel").textContent = state.holdingFocusTicker
+    ? `Focused · ${state.holdingFocusTicker}`
+    : `${total} holdings`;
+  byId("holdingLegendClear").disabled = !state.holdingFocusTicker;
+}
+
+function syncHoldingLegendSearch() {
+  const query = normalizeText(byId("holdingLegendSearch").value).toUpperCase();
+  let visibleCount = 0;
+  byId("holdingLegendList").querySelectorAll("[data-holding-ticker]").forEach((item) => {
+    const isVisible = !query || item.dataset.holdingTicker.includes(query);
+    item.hidden = !isVisible;
+    visibleCount += Number(isVisible);
+  });
+  byId("holdingLegendEmpty").hidden = visibleCount > 0;
 }
 
 function wirePlanControls() {
@@ -324,6 +588,10 @@ function refreshDataViews({ resetViewDate = false } = {}) {
   renderDashboard();
   if (activeTabId() === "plans") {
     renderPlanWorkspace();
+  } else if (activeTabId() === "analysis") {
+    renderAnalysisArchive({ renderCharts: true });
+  } else {
+    renderAnalysisArchive();
   }
   setStatus(statusText());
   renderIcons();
@@ -333,6 +601,294 @@ function activeTabId() {
   return document.querySelector(".tab-panel.is-active")?.id || "dashboard";
 }
 
+function renderAnalysisArchive({ renderCharts = false } = {}) {
+  const reports = [...state.analysisReports].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  const selected = reports.find((report) => report.id === state.selectedAnalysisId) || reports[0];
+  byId("analysisArchiveCount").textContent = `${reports.length} ${reports.length === 1 ? "report" : "reports"}`;
+
+  byId("analysisArchiveList").innerHTML = reports
+    .map((report) => {
+      const isActive = report.id === selected?.id;
+      return `<button class="analysis-archive-item${isActive ? " is-active" : ""}" type="button" data-analysis-id="${escapeHtml(report.id)}" aria-pressed="${String(isActive)}">
+        <span>${escapeHtml(formatDateLabel(report.publishedAt))}</span>
+        <strong>${escapeHtml(report.title)}</strong>
+        <small>${escapeHtml(report.type || "Portfolio analysis")} · 기준 ${escapeHtml(formatShortDateLabel(report.asOf))}</small>
+      </button>`;
+    })
+    .join("");
+
+  const select = byId("analysisReportSelect");
+  select.innerHTML = reports
+    .map((report) => `<option value="${escapeHtml(report.id)}">${escapeHtml(`${report.publishedAt} · ${report.title}`)}</option>`)
+    .join("");
+  select.value = selected?.id || "";
+
+  if (!selected) {
+    byId("analysisReportTitle").textContent = "아직 저장된 분석이 없습니다.";
+    return;
+  }
+
+  state.selectedAnalysisId = selected.id;
+  renderAnalysisReport(selected);
+  if (renderCharts) {
+    afterNextPaint(() => renderAnalysisCharts(selected));
+  }
+}
+
+function renderAnalysisReport(report) {
+  byId("analysisReportDate").textContent = `발행 ${formatDateLabel(report.publishedAt)}`;
+  byId("analysisReportAsOf").textContent = `데이터 기준 ${formatDateLabel(report.asOf)}`;
+  byId("analysisReportTitle").textContent = report.title;
+  byId("analysisReportSubtitle").textContent = report.subtitle;
+  byId("analysisReportTags").innerHTML = (report.tags || [])
+    .map((tag) => `<span>${escapeHtml(tag)}</span>`)
+    .join("");
+  byId("analysisVerdictTitle").textContent = report.verdict?.title || "—";
+  byId("analysisVerdictCopy").textContent = report.verdict?.copy || "";
+
+  byId("analysisMetricStrip").innerHTML = (report.metrics || [])
+    .map((metric) => `<article class="analysis-metric ${analysisToneClass(metric.tone)}">
+      <span>${escapeHtml(metric.label)}</span>
+      <strong>${escapeHtml(formatAnalysisMetric(metric))}</strong>
+      <small>${escapeHtml(metric.note || "")}</small>
+    </article>`)
+    .join("");
+
+  byId("analysisPhaseTimeline").innerHTML = (report.phases || [])
+    .map((phase, index) => `<article class="analysis-phase ${analysisToneClass(phase.tone)}">
+      <div class="analysis-phase-index">${String(index + 1).padStart(2, "0")}</div>
+      <div class="analysis-phase-copy">
+        <span>${escapeHtml(phase.period)}</span>
+        <h3>${escapeHtml(phase.title)}</h3>
+        <p>${escapeHtml(phase.copy)}</p>
+      </div>
+      <strong>${escapeHtml(phase.return)}</strong>
+    </article>`)
+    .join("");
+
+  const allocationTotal = (report.allocation || []).reduce((sum, row) => sum + Number(row.value || 0), 0);
+  byId("analysisAllocationMeta").textContent = `${formatCurrency(allocationTotal)} · ${formatDateLabel(report.asOf)}`;
+  byId("analysisAllocationList").innerHTML = (report.allocation || [])
+    .map((row) => `<div class="analysis-allocation-row">
+      <div class="analysis-allocation-label">
+        <span class="analysis-allocation-swatch" style="--analysis-color:${escapeHtml(row.color)}"></span>
+        <strong>${escapeHtml(row.label)}</strong>
+        <small>${escapeHtml(formatCurrency(row.value))}</small>
+      </div>
+      <div class="analysis-allocation-track" aria-label="${escapeHtml(`${row.label} ${row.share}%`)}">
+        <span style="--analysis-width:${Math.max(0, Math.min(Number(row.share || 0), 100))}%;--analysis-color:${escapeHtml(row.color)}"></span>
+      </div>
+      <b>${Number(row.share || 0).toFixed(1)}%</b>
+    </div>`)
+    .join("");
+  byId("analysisConcentrationNote").innerHTML = `<strong>${escapeHtml(report.concentration?.headline || "")}</strong><p>${escapeHtml(report.concentration?.copy || "")}</p>`;
+
+  byId("analysisReturnShape").innerHTML = (report.returnShape || [])
+    .map((row) => `<article class="analysis-return-shape-row ${analysisToneClass(row.tone)}">
+      <span>${escapeHtml(row.label)}</span>
+      <strong>${escapeHtml(row.value)}</strong>
+      <small>${escapeHtml(row.note || "")}</small>
+    </article>`)
+    .join("");
+
+  renderAnalysisList("analysisStrengths", report.strengths);
+  renderAnalysisList("analysisRisks", report.risks);
+
+  const data = report.data || {};
+  byId("analysisDataStatus").textContent = data.status || "—";
+  byId("analysisDataSummary").textContent = data.summary || "";
+  byId("analysisCoverageList").innerHTML = renderAnalysisCoverage(data.coverage || [], data.coverageStart, report.publishedAt);
+  byId("analysisRequestList").innerHTML = (data.requests || [])
+    .map((request) => `<article class="analysis-request-row">
+      <span>${escapeHtml(request.priority)}</span>
+      <div><strong>${escapeHtml(request.title)}</strong><p>${escapeHtml(request.copy)}</p></div>
+    </article>`)
+    .join("");
+  byId("analysisPrivacyNote").innerHTML = `<i data-lucide="shield-check"></i><p>${escapeHtml(data.privacy || "")}</p>`;
+
+  byId("analysisNextActions").innerHTML = (report.nextActions || [])
+    .map((action) => `<li><span>${escapeHtml(action)}</span></li>`)
+    .join("");
+  renderIcons();
+}
+
+function renderAnalysisList(id, items = []) {
+  byId(id).innerHTML = items.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+}
+
+function renderAnalysisCoverage(rows, rangeStart, rangeEnd) {
+  const startTime = Date.parse(`${rangeStart || rangeEnd}T00:00:00Z`);
+  const endTime = Date.parse(`${rangeEnd}T00:00:00Z`);
+  const duration = Math.max(endTime - startTime, 1);
+  return rows
+    .map((row) => {
+      const fromTime = Math.max(Date.parse(`${row.from}T00:00:00Z`), startTime);
+      const toTime = Math.min(Date.parse(`${row.to}T00:00:00Z`), endTime);
+      const left = Math.max(0, Math.min(((fromTime - startTime) / duration) * 100, 100));
+      const width = Math.max(2, Math.min(((toTime - fromTime) / duration) * 100, 100 - left));
+      return `<div class="analysis-coverage-row ${analysisToneClass(row.tone)}">
+        <div class="analysis-coverage-copy"><strong>${escapeHtml(row.account)}</strong><span>${escapeHtml(row.status)}</span></div>
+        <div class="analysis-coverage-track"><span style="--coverage-left:${left.toFixed(2)}%;--coverage-width:${width.toFixed(2)}%"></span></div>
+        <small>${escapeHtml(row.from)} → ${escapeHtml(row.to)}</small>
+      </div>`;
+    })
+    .join("");
+}
+
+function analysisToneClass(tone) {
+  return ["accent", "positive", "negative", "complete", "partial", "gap"].includes(tone) ? `is-${tone}` : "";
+}
+
+function formatAnalysisMetric(metric) {
+  if (metric.format === "currency") {
+    return formatCurrency(metric.value);
+  }
+  if (metric.format === "percent") {
+    return formatSignedPercent(Number(metric.value));
+  }
+  return String(metric.value ?? "—");
+}
+
+function renderAnalysisCharts(report) {
+  renderAnalysisAnnualReturnChart(report);
+  renderAnalysisAllocationHistoryChart(report);
+}
+
+function renderAnalysisAnnualReturnChart(report) {
+  const rows = state.investmentReturns.filter((row) => row.periodEnd <= report.asOf);
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const year = row.periodStart.slice(0, 4);
+    if (!grouped.has(year)) {
+      grouped.set(year, []);
+    }
+    grouped.get(year).push(row.monthlyReturn);
+  });
+  const annual = [...grouped.entries()].map(([year, returns]) => ({
+    year,
+    months: returns.length,
+    value: (returns.reduce((factor, value) => factor * (1 + value), 1) - 1) * 100,
+  }));
+  byId("analysisReturnMeta").textContent = annual.length
+    ? `${annual[0].year}–${annual.at(-1).year} · 첫해와 마지막해는 부분기간`
+    : "수익 데이터 없음";
+
+  replaceChart("analysisAnnualReturnChart", {
+    type: "bar",
+    data: {
+      labels: annual.map((row) => row.year),
+      datasets: [{
+        label: "연간 수익률",
+        data: annual.map((row) => row.value),
+        backgroundColor: annual.map((row) => row.value >= 0 ? "rgba(143, 221, 160, 0.78)" : "rgba(248, 154, 154, 0.76)"),
+        borderColor: annual.map((row) => row.value >= 0 ? "#8fdda0" : "#f89a9a"),
+        borderWidth: 1,
+        borderRadius: 5,
+        maxBarThickness: 46,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 420, easing: "easeOutCubic" },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => `${annual[items[0].dataIndex].year}년 · ${annual[items[0].dataIndex].months}개월`,
+            label: (item) => `순수 투자수익 ${formatSignedPercent(Number(item.raw))}`,
+          },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: "#b3bdc9", font: { size: 13, weight: 600 } } },
+        y: {
+          grace: "8%",
+          grid: { color: (context) => Number(context.tick.value) === 0 ? "rgba(218, 230, 224, 0.28)" : "rgba(218, 230, 224, 0.07)" },
+          ticks: { color: "#b3bdc9", font: { size: 12, weight: 600 }, callback: (value) => `${value}%` },
+        },
+      },
+    },
+  });
+}
+
+function renderAnalysisAllocationHistoryChart(report) {
+  const eligible = state.holdings.filter((row) => row.Date <= report.asOf);
+  const latestDateByYear = new Map();
+  eligible.forEach((row) => {
+    const year = row.Date.slice(0, 4);
+    if (!latestDateByYear.has(year) || row.Date > latestDateByYear.get(year)) {
+      latestDateByYear.set(year, row.Date);
+    }
+  });
+  const snapshots = [...latestDateByYear.entries()].map(([year, date]) => {
+    const rows = eligible.filter((row) => row.Date === date);
+    const total = sumRows(rows) || 1;
+    const groups = { cash: 0, dividend: 0, general: 0, speculative: 0, other: 0 };
+    rows.forEach((row) => {
+      const assetType = row["Asset Type"];
+      if ([CASH_ASSET_TYPE, "비상금", "소비"].includes(assetType)) {
+        groups.cash += Number(row.Volume || 0);
+      } else if (assetType === "배당주") {
+        groups.dividend += Number(row.Volume || 0);
+      } else if (assetType === "일반 투자") {
+        groups.general += Number(row.Volume || 0);
+      } else if (["공격형 투자", "미래기술 투자"].includes(assetType)) {
+        groups.speculative += Number(row.Volume || 0);
+      } else {
+        groups.other += Number(row.Volume || 0);
+      }
+    });
+    Object.keys(groups).forEach((key) => { groups[key] = (groups[key] / total) * 100; });
+    return { year, date, groups };
+  });
+  const buckets = [
+    ["cash", "현금성", "#8fb7ff"],
+    ["dividend", "배당주", "#8fdda0"],
+    ["general", "일반 투자", "#bea7ff"],
+    ["speculative", "고위험·미래기술", "#f89a9a"],
+    ["other", "기타", "#f4d66d"],
+  ];
+
+  replaceChart("analysisAllocationHistoryChart", {
+    type: "bar",
+    data: {
+      labels: snapshots.map((row) => row.year),
+      datasets: buckets.map(([key, label, color]) => ({
+        label,
+        data: snapshots.map((row) => row.groups[key]),
+        backgroundColor: color,
+        borderColor: "rgba(9, 11, 16, 0.72)",
+        borderWidth: 1,
+        borderRadius: 2,
+        barPercentage: 0.72,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 420, easing: "easeOutCubic" },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { boxWidth: 9, boxHeight: 9, color: "#d0d7e0", usePointStyle: true, padding: 14, font: { size: 13, weight: 650 } },
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => `${snapshots[items[0].dataIndex].year}년 · ${formatShortDateLabel(snapshots[items[0].dataIndex].date)}`,
+            label: (item) => `${item.dataset.label}: ${Number(item.raw).toFixed(1)}%`,
+          },
+        },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: "#b3bdc9", font: { size: 13, weight: 600 } } },
+        y: { stacked: true, min: 0, max: 100, grid: { color: "rgba(218, 230, 224, 0.07)" }, ticks: { color: "#b3bdc9", font: { size: 12, weight: 600 }, callback: (value) => `${value}%` } },
+      },
+    },
+  });
+}
+
 function afterNextPaint(callback) {
   requestAnimationFrame(() => {
     requestAnimationFrame(callback);
@@ -340,14 +896,35 @@ function afterNextPaint(callback) {
 }
 
 function syncDateControls() {
-  const select = byId("dateSelect");
-  const slider = byId("dateSlider");
+  const currentIndex = Math.max(state.dates.indexOf(state.viewDate), 0);
+  const activeYear = state.viewDate.slice(0, 4);
+  const years = unique(state.dates.map((date) => date.slice(0, 4)));
+  const datesInYear = state.dates.filter((date) => date.startsWith(`${activeYear}-`));
 
-  select.innerHTML = state.dates.map((date) => `<option value="${date}">${formatDateLabel(date)}</option>`).join("");
-  select.value = state.viewDate;
-  slider.max = String(Math.max(state.dates.length - 1, 0));
-  slider.value = String(Math.max(state.dates.indexOf(state.viewDate), 0));
-  slider.disabled = state.dates.length <= 1;
+  byId("timelinePosition").textContent = state.dates.length
+    ? `Snapshot ${currentIndex + 1} of ${state.dates.length}`
+    : "No snapshots available";
+  byId("activeSnapshotLabel").textContent = state.viewDate ? formatDateLabel(state.viewDate) : "No snapshot";
+  byId("previousSnapshotBtn").disabled = !state.dates.length || currentIndex === 0;
+  byId("nextSnapshotBtn").disabled = !state.dates.length || currentIndex === state.dates.length - 1;
+  byId("latestSnapshotBtn").disabled = !state.dates.length || currentIndex === state.dates.length - 1;
+
+  const yearSelect = byId("snapshotYearSelect");
+  yearSelect.innerHTML = years.map((year) => `<option value="${year}">${year}</option>`).join("");
+  yearSelect.value = activeYear;
+  yearSelect.disabled = years.length <= 1;
+
+  const monthSelect = byId("snapshotMonthSelect");
+  monthSelect.innerHTML = datesInYear.map((date) => `<option value="${date}">${snapshotOptionLabel(date)}</option>`).join("");
+  monthSelect.value = state.viewDate;
+  monthSelect.disabled = datesInYear.length <= 1;
+}
+
+function snapshotOptionLabel(date) {
+  const parsedDate = new Date(`${date}T00:00:00Z`);
+  const month = parsedDate.toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
+  const day = String(parsedDate.getUTCDate()).padStart(2, "0");
+  return `${month} ${day}`;
 }
 
 function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {}) {
@@ -367,16 +944,16 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   byId("metricTotal").textContent = formatCurrency(total);
   byId("metricInvestment").textContent = formatCurrency(investmentTotal);
   byId("metricInvestmentPercent").textContent = `${investmentPercent}% of total portfolio`;
+  byId("investedCapitalReadout").textContent = formatCurrency(investmentTotal);
+  byId("investedShareMeta").textContent = `${investmentPercent}% of net worth`;
   byId("metricCash").textContent = formatCurrency(cashTotal);
   byId("metricCashPercent").textContent = `${cashPercent}% available outside tickers`;
-  byId("viewDateLabel").textContent = formatDateLabel(state.viewDate);
   byId("metricChangeLabel").textContent = previousDate ? `Since ${formatShortDateLabel(previousDate)}` : "Since prior snapshot";
   byId("metricChange").textContent = previousDate ? formatSignedCurrency(totalChange) : "—";
   byId("metricChangePercent").textContent = previousDate ? `${formatSignedPercent(totalChangePercent)} portfolio change` : "First available snapshot";
   byId("metricChange").classList.toggle("is-positive", totalChange > 0);
   byId("metricChange").classList.toggle("is-negative", totalChange < 0);
 
-  renderPortfolioSignals(rows, total);
   renderCapitalPerformance(total);
 
   renderAssetDistributionChart({
@@ -412,28 +989,6 @@ function renderDashboard({ updateLines = true, doughnutAnimation = "scale" } = {
   }
 }
 
-function renderPortfolioSignals(rows, total) {
-  const tickerEntries = [...groupSum(rows.filter((row) => row.Ticker), "Ticker").entries()].sort((a, b) => b[1] - a[1]);
-  const assetEntries = [...groupSum(rows, "Asset Type").entries()].sort((a, b) => b[1] - a[1]);
-  const firmEntries = [...groupSum(rows, "Securities Firm").entries()].sort((a, b) => b[1] - a[1]);
-  const [largestTicker = "—", largestTickerValue = 0] = tickerEntries[0] || [];
-  const [largestAsset = "—", largestAssetValue = 0] = assetEntries[0] || [];
-  const [largestFirm = "—", largestFirmValue = 0] = firmEntries[0] || [];
-
-  byId("insightLargestPosition").textContent = largestTicker;
-  byId("insightLargestPositionMeta").textContent = largestTickerValue
-    ? `${formatCurrency(largestTickerValue)} · ${formatPercentOf(largestTickerValue, total)} of total`
-    : "No ticker-linked positions";
-  byId("insightLargestAllocation").textContent = largestAsset;
-  byId("insightLargestAllocationMeta").textContent = largestAssetValue
-    ? `${formatCurrency(largestAssetValue)} · ${formatPercentOf(largestAssetValue, total)} of total`
-    : "No allocation data";
-  byId("insightInstitutions").textContent = `${firmEntries.length} ${firmEntries.length === 1 ? "institution" : "institutions"}`;
-  byId("insightInstitutionsMeta").textContent = largestFirmValue
-    ? `${largestFirm} holds ${formatPercentOf(largestFirmValue, total)}`
-    : "No institution data";
-}
-
 function renderCapitalPerformance(actualTotal) {
   const baseline = buildCapitalBaseline();
   const baselinePoint = baseline.points.find((point) => point.date === state.viewDate);
@@ -453,10 +1008,6 @@ function renderCapitalPerformance(actualTotal) {
     resultNode.classList.toggle("is-negative", result < 0);
     byId("assetTrendMeta").textContent = `${formatSignedPercent(resultPercent)} vs capital baseline`;
   }
-
-  byId("capitalBaselineNote").textContent = baseline.anchorObservation
-    ? `Cash-only baseline starts with the actual ${formatDateLabel(baseline.anchorObservation.date)} pre-investment cash. It then saves identified family support, school and military income, bank interest, and tax net flows without applying investment returns. Internal transfers and travel reimbursements are excluded; ordinary consumption is not reconstructed.`
-    : "Cash-only baseline will appear once the March 2020 pre-investment anchor is available.";
 }
 
 function buildCapitalBaseline() {
@@ -469,28 +1020,35 @@ function buildCapitalBaseline() {
 
 function renderAssetDistributionChart({ chartId, centerId, metaId, rows, animationMode = "scale" }) {
   const { parents, details, total } = buildAssetDistributionSegments(rows);
-  const labels = details.map((detail) => detail.label);
-  const largestParent = parents[0];
+  const currentDetailsByKey = new Map(details.map((detail) => [assetDistributionDetailKey(detail), detail]));
+  const chartDetails = buildAssetDistributionSegments(state.holdings).details
+    .sort((a, b) => a.parentIndex - b.parentIndex || a.firstDate.localeCompare(b.firstDate) || a.label.localeCompare(b.label))
+    .map((domainDetail) => {
+      const currentDetail = currentDetailsByKey.get(assetDistributionDetailKey(domainDetail));
+      return currentDetail
+        ? { ...currentDetail, color: domainDetail.color, borderColor: domainDetail.borderColor, firstDate: domainDetail.firstDate }
+        : { ...domainDetail, value: 0 };
+    });
+  const labels = chartDetails.map((detail) => detail.label);
 
-  byId(centerId).innerHTML = largestParent
-    ? `<strong>${formatPercentOf(largestParent.value, total)}</strong><span>${escapeHtml(largestParent.label)} · leading</span>`
-    : `<strong>—</strong><span>No allocation</span>`;
+  byId(centerId).innerHTML = `<strong>${formatCurrency(total)}</strong><span>Total portfolio</span>`;
   byId(metaId).textContent = `${parents.length} classes · ${details.length} positions`;
 
-  replaceChart(chartId, {
+  updateDoughnutChart(chartId, {
     type: "doughnut",
     data: {
       labels,
       datasets: [
         {
           label: "Asset detail",
-          data: details.map((detail) => detail.value),
-          backgroundColor: details.map((detail) => detail.color),
-          borderColor: details.map((detail) => detail.borderColor),
+          data: chartDetails.map((detail) => detail.value),
+          backgroundColor: chartDetails.map((detail) => detail.color),
+          borderColor: chartDetails.map((detail) => detail.borderColor),
           borderWidth: 1.5,
           hoverOffset: 8,
           assetDistributionKind: "detail",
-          assetDistributionRecords: details,
+          assetDistributionRecords: chartDetails,
+          doughnutKeys: chartDetails.map(assetDistributionDetailKey),
         },
       ],
     },
@@ -526,6 +1084,7 @@ function buildAssetDistributionSegments(rows) {
           value: sumRows(detailRows),
           kind,
           parentValue: parent.value,
+          firstDate: detailRows.reduce((firstDate, row) => (!firstDate || row.Date < firstDate ? row.Date : firstDate), ""),
           parentColor: parent.color,
           parentIndex,
           detailIndex,
@@ -553,6 +1112,10 @@ function buildAssetDistributionSegments(rows) {
   };
 }
 
+function assetDistributionDetailKey(detail) {
+  return JSON.stringify([detail.parentLabel, detail.kind, detail.label]);
+}
+
 function assetDistributionDetailLabel(row, assetType) {
   if (row.Ticker) {
     return row.Ticker;
@@ -574,7 +1137,7 @@ function assetDistributionDetailKind(row, assetType) {
 }
 
 function assetDistributionLegendLabels(parents) {
-  return () =>
+  return (chart) =>
     parents.map((parent, index) => ({
       text: parent.label,
       fillStyle: parent.color,
@@ -585,7 +1148,11 @@ function assetDistributionLegendLabels(parents) {
       hidden: false,
       index,
       assetDistributionRecord: parent,
-      assetDistributionDetailIndexes: parent.detailIndexes,
+      assetDistributionDetailIndexes: (chart.data.datasets[0].assetDistributionRecords || [])
+        .map((detail, detailIndex) =>
+          detail?.parentLabel === parent.label && Number(chart.data.datasets[0].data[detailIndex]) > 0 ? detailIndex : -1
+        )
+        .filter((detailIndex) => detailIndex >= 0),
     }));
 }
 
@@ -636,7 +1203,7 @@ function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind, anima
     : `<strong>—</strong><span>No data</span>`;
   byId(metaId).textContent = `${labels.length} ${labels.length === 1 ? "group" : "groups"}`;
 
-  replaceChart(chartId, {
+  updateDoughnutChart(chartId, {
     type: "doughnut",
     data: {
       labels,
@@ -647,6 +1214,7 @@ function renderDoughnut({ chartId, centerId, metaId, rows, key, colorKind, anima
           borderColor: labels.map((label) => borderFor(colorFor(colorKind, label, 0))),
           borderWidth: 1.5,
           hoverOffset: 8,
+          doughnutKeys: labels,
         },
       ],
     },
@@ -665,8 +1233,11 @@ function renderLineCharts() {
   const allPoints = pointsFromRows(state.holdings);
   const investmentPoints = pointsFromRows(state.holdings.filter((row) => row.Ticker));
   const capitalBaseline = buildCapitalBaseline();
-  const actualAssetDataset = buildLineDataset("Actual portfolio", allPoints, "#c7b8ff", { areaFill: true, borderWidth: 2.1 });
+  const actualAssetDataset = buildLineDataset("Net worth", allPoints, "#c7b8ff", { areaFill: true, borderWidth: 2.1 });
+  const investmentDataset = buildLineDataset("Invested capital", investmentPoints, "#8fdda0", { areaFill: true, borderWidth: 2 });
   const capitalBaselineDataset = buildLineDataset("Capital baseline", capitalBaseline.points, "#8f9bab", { borderWidth: 1.5 });
+  actualAssetDataset.snapshotSelectable = true;
+  investmentDataset.snapshotSelectable = true;
   capitalBaselineDataset.borderDash = [7, 6];
   capitalBaselineDataset.pointRadius = 0;
   capitalBaselineDataset.pointHoverRadius = 4;
@@ -674,27 +1245,61 @@ function renderLineCharts() {
 
   replaceChart(
     "assetTrendChart",
-    lineChartConfig(timeline, capitalBaseline.points.length ? [actualAssetDataset, capitalBaselineDataset] : [actualAssetDataset]),
-  );
-  replaceChart(
-    "investmentTrendChart",
-    lineChartConfig(timeline, [buildLineDataset("Ticker holdings", investmentPoints, "#8fdda0", { areaFill: true, borderWidth: 1.8 })], {
-      showLegend: false,
+    lineChartConfig(timeline, capitalBaseline.points.length
+      ? [actualAssetDataset, investmentDataset, capitalBaselineDataset]
+      : [actualAssetDataset, investmentDataset], {
+      interactionMode: "nearest",
+      legendClickMode: "visibilityOnly",
+      snapshotNavigation: true,
+      snapshotPointDatasetLabel: "Net worth",
+      zoomPan: true,
     }),
   );
 
   const tickerGroups = groupRows(state.holdings.filter((row) => row.Ticker), "Ticker");
-  const tickerDatasets = [...tickerGroups.entries()]
-    .sort((a, b) => sumRows(b[1]) - sumRows(a[1]))
-    .map(([ticker, tickerRows], index) => {
-      const color = colorFor("ticker", ticker, index);
-      return buildLineDataset(ticker, pointsFromRows(tickerRows), color);
+  const trajectoryCandidates = [...tickerGroups.entries()]
+    .map(([ticker, tickerRows]) => {
+      const points = pointsFromRows(tickerRows);
+      return {
+        ticker,
+        points,
+        qualifyingPointCount: points.filter((point) => point.value >= HOLDING_TRAJECTORY_MIN_VALUE).length,
+        peakValue: points.reduce((peak, point) => Math.max(peak, point.value), 0),
+      };
+    })
+    .filter((record) => record.points.length)
+    .sort((a, b) => b.peakValue - a.peakValue || a.ticker.localeCompare(b.ticker));
+  const majorTickers = new Set(
+    trajectoryCandidates
+      .filter((record) => record.qualifyingPointCount >= HOLDING_TRAJECTORY_MIN_OBSERVATIONS)
+      .slice(0, HOLDING_TRAJECTORY_MAJOR_COUNT)
+      .map((record) => record.ticker),
+  );
+  const validRangeDates = trajectoryCandidates.flatMap((record) => record.points.map((point) => point.date));
+  const holdingTimeline = buildTimeline(validRangeDates.length ? validRangeDates : state.dates);
+  const tickerDatasets = trajectoryCandidates.map((record, index) => {
+    const color = colorFor("ticker", record.ticker, index);
+    const isMeaningfulSeries = record.qualifyingPointCount >= HOLDING_TRAJECTORY_MIN_OBSERVATIONS;
+    const normalPointRadius = window.innerWidth < 720 ? 2 : 2.5;
+    const showPointMarker = (context) => isMeaningfulSeries
+      && Number(context.raw?.y) >= HOLDING_TRAJECTORY_MIN_VALUE;
+    const dataset = buildLineDataset(record.ticker, record.points, color, {
+      pointRadius: (context) => showPointMarker(context) ? normalPointRadius : 0,
+      pointHoverRadius: (context) => showPointMarker(context) ? 5 : 0,
+      pointHitRadius: 7,
     });
+    dataset.preservePointFiltering = true;
+    dataset.isMajorHolding = majorTickers.has(record.ticker);
+    dataset.trajectoryPeakValue = record.peakValue;
+    dataset.trajectoryObservationCount = record.points.length;
+    return dataset;
+  });
 
   replaceChart(
     "valueTrendChart",
-    lineChartConfig(timeline, tickerDatasets, { legendClickMode: "hideThenIsolate", legendHoverMode: "semiIsolate" }),
+    lineChartConfig(holdingTimeline, tickerDatasets, { showLegend: false, snapshotNavigation: true, zoomPan: true }),
   );
+  renderHoldingLegend(tickerDatasets);
   renderInvestmentReturnChart();
 }
 
@@ -711,19 +1316,12 @@ function renderInvestmentReturnChart() {
     Math.round((Date.parse(`${latest.periodEnd}T00:00:00Z`) - Date.parse(`${rows[0].periodStart}T00:00:00Z`)) / 86400000),
   );
   const annualizedPercent = (Math.pow(1 + latest.cumulativeReturn, 365 / elapsedDays) - 1) * 100;
-  const best = rows.reduce((current, row) => (row.monthlyReturn > current.monthlyReturn ? row : current), rows[0]);
-  const worst = rows.reduce((current, row) => (row.monthlyReturn < current.monthlyReturn ? row : current), rows[0]);
   const cumulativeNode = byId("cumulativeReturn");
 
   cumulativeNode.textContent = formatSignedPercent(cumulativePercent);
   cumulativeNode.classList.toggle("is-positive", cumulativePercent > 0);
   cumulativeNode.classList.toggle("is-negative", cumulativePercent < 0);
   byId("annualizedReturn").textContent = `${formatSignedPercent(annualizedPercent)} annualized · since ${formatShortDateLabel(rows[0].periodStart)}`;
-  byId("investmentReturnNote").textContent =
-    `Estimated Modified Dietz return for Namuh, Kiwoom, and Samsung brokerage accounts. Account deposits and withdrawals are removed; trades, dividends, fees, and FX remain inside performance. ` +
-    `Best month ${formatShortDateLabel(best.periodStart)} ${formatSignedPercent(best.monthlyReturn * 100)} · worst ${formatShortDateLabel(worst.periodStart)} ${formatSignedPercent(worst.monthlyReturn * 100)}. ` +
-    `KB and Daishin are excluded because transaction histories were not imported; reconstructed historical values are accepted as final.`;
-
   const returnXScale = (dateKey) => ({
     grid: { display: false },
     ticks: {
@@ -731,24 +1329,44 @@ function renderInvestmentReturnChart() {
       autoSkip: true,
       maxTicksLimit: window.innerWidth < 720 ? 6 : 12,
       maxRotation: 0,
-      callback: (_value, index) => formatShortDateLabel(rows[index][dateKey]),
+      padding: 8,
+      font: { size: window.innerWidth < 720 ? 9 : 10, weight: 600 },
+      callback: (value, index) => monthYearAxisLabel(rows[Number(value)]?.[dateKey] || rows[index]?.[dateKey]),
     },
   });
 
-  replaceChart("cumulativeReturnChart", {
-    type: "line",
+  const config = {
+    type: "bar",
     data: {
       labels: rows.map((row) => row.periodEnd),
       datasets: [
         {
+          label: "Monthly return",
+          order: 2,
+          yAxisID: "yMonthly",
+          data: rows.map((row) => row.monthlyReturn * 100),
+          backgroundColor: rows.map((row) =>
+            row.monthlyReturn >= 0 ? "rgba(143, 221, 160, 0.68)" : "rgba(248, 154, 154, 0.68)"
+          ),
+          borderWidth: 0,
+          borderRadius: 2,
+          barPercentage: 0.82,
+          categoryPercentage: 0.88,
+          maxBarThickness: 18,
+        },
+        {
+          type: "line",
           label: "Cumulative return",
+          order: 1,
+          yAxisID: "yCumulative",
           data: rows.map((row) => row.cumulativeReturn * 100),
           borderColor: "#c7b8ff",
-          backgroundColor: "rgba(199, 184, 255, 0.12)",
+          backgroundColor: "#c7b8ff",
           pointRadius: 0,
           pointHoverRadius: 4,
-          borderWidth: 2,
-          fill: true,
+          pointBackgroundColor: "#c7b8ff",
+          borderWidth: 2.3,
+          fill: false,
           tension: 0.24,
         },
       ],
@@ -759,73 +1377,69 @@ function renderInvestmentReturnChart() {
       interaction: { mode: "index", intersect: false },
       animation: { duration: 420, easing: "easeOutCubic" },
       plugins: {
-        legend: { display: false },
+        legend: {
+          position: "bottom",
+          labels: {
+            boxWidth: 8,
+            boxHeight: 8,
+            color: "#b9c3d0",
+            usePointStyle: true,
+            padding: 16,
+            font: { size: window.innerWidth < 720 ? 11 : 12, weight: 600 },
+          },
+        },
         tooltip: {
+          backgroundColor: "rgba(10, 13, 18, 0.96)",
+          borderColor: "rgba(218, 230, 224, 0.16)",
+          borderWidth: 1,
           callbacks: {
             title: (items) => formatDateLabel(rows[items[0].dataIndex].periodEnd),
-            label: (item) => `Cumulative return: ${formatSignedPercent(Number(item.raw))}`,
+            label: (item) => `${item.dataset.label}: ${formatSignedPercent(Number(item.raw))}`,
           },
         },
       },
       scales: {
         x: returnXScale("periodEnd"),
-        y: {
+        yCumulative: {
+          position: "right",
+          grace: "6%",
           grid: {
-            color: (context) => (Number(context.tick.value) === 0 ? "rgba(199, 184, 255, 0.5)" : "rgba(218, 230, 224, 0.08)"),
+            color: (context) => (Number(context.tick.value) === 0 ? "rgba(199, 184, 255, 0.42)" : "rgba(218, 230, 224, 0.07)"),
             lineWidth: (context) => (Number(context.tick.value) === 0 ? 1.5 : 1),
           },
-          ticks: { color: "#82909f", callback: (value) => `${value}%` },
+          title: { display: true, text: "Cumulative", color: "#9f94d1", font: { size: 10, weight: 700 } },
+          ticks: { color: "#9f94d1", font: { size: window.innerWidth < 720 ? 9 : 10, weight: 600 }, callback: (value) => `${value}%` },
         },
-      },
-    },
-  });
-
-  replaceChart("investmentReturnChart", {
-    type: "bar",
-    data: {
-      labels: rows.map((row) => row.periodStart),
-      datasets: [
-        {
-          label: "Monthly return",
-          data: rows.map((row) => row.monthlyReturn * 100),
-          backgroundColor: rows.map((row) =>
-            row.monthlyReturn >= 0 ? "rgba(143, 221, 160, 0.68)" : "rgba(248, 154, 154, 0.68)"
-          ),
-          borderWidth: 0,
-          borderRadius: 2,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      animation: { duration: 420, easing: "easeOutCubic" },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: (items) => formatDateLabel(rows[items[0].dataIndex].periodStart),
-            label: (item) => `Monthly return: ${formatSignedPercent(Number(item.raw))}`,
-          },
-        },
-      },
-      scales: {
-        x: returnXScale("periodStart"),
-        y: {
+        yMonthly: {
+          position: "left",
+          grace: "8%",
           grid: {
-            color: (context) => (Number(context.tick.value) === 0 ? "rgba(218, 230, 224, 0.36)" : "rgba(218, 230, 224, 0.08)"),
-            lineWidth: (context) => (Number(context.tick.value) === 0 ? 1.5 : 1),
+            drawOnChartArea: true,
+            color: (context) => (Number(context.tick.value) === 0 ? "rgba(143, 221, 160, 0.32)" : "rgba(0, 0, 0, 0)"),
+            lineWidth: (context) => (Number(context.tick.value) === 0 ? 1.4 : 0),
           },
-          ticks: { color: "#82909f", callback: (value) => `${value}%` },
+          title: { display: true, text: "Monthly", color: "#79b987", font: { size: 10, weight: 700 } },
+          ticks: { color: "#79b987", font: { size: window.innerWidth < 720 ? 9 : 10, weight: 600 }, callback: (value) => `${value}%` },
         },
       },
     },
-  });
+  };
+  applySnapshotNavigation(config, { scaleMode: "category" });
+  replaceChart("investmentReturnChart", config);
 }
 
-function lineChartConfig(timeline, datasets, { legendClickMode = "default", legendHoverMode = "default", showLegend = true } = {}) {
+function lineChartConfig(timeline, datasets, {
+  interactionMode = "nearest",
+  legendClickMode = "default",
+  legendHoverMode = "default",
+  lockYAxisToAllData = false,
+  showLegend = true,
+  snapshotNavigation = false,
+  snapshotPointDatasetLabel = "",
+  zoomPan = false,
+} = {}) {
   const compactChart = window.innerWidth < 720;
+  const lockedYAxisBounds = lockYAxisToAllData ? lineChartYAxisBounds(datasets) : null;
   const legendOptions = showLegend
     ? {
         position: "bottom",
@@ -835,7 +1449,7 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
           color: "#b9c3d0",
           usePointStyle: true,
           padding: compactChart ? 8 : 12,
-          font: { size: compactChart ? 9 : 10, weight: 600 },
+          font: { size: compactChart ? 11 : 12, weight: 600 },
         },
       }
     : {
@@ -848,18 +1462,22 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
     legendOptions.onClick = hideThenIsolateLegendClick;
   }
 
+  if (showLegend && legendClickMode === "visibilityOnly") {
+    legendOptions.onClick = visibilityOnlyLegendClick;
+  }
+
   if (showLegend && legendHoverMode === "semiIsolate") {
     legendOptions.onHover = semiIsolateLineLegendHover;
     legendOptions.onLeave = semiIsolateLineLegendLeave;
   }
 
-  return {
+  const config = {
     type: "line",
     data: { datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: "nearest", axis: "x", intersect: false },
+      interaction: { mode: interactionMode, axis: "x", intersect: false },
       animation: {
         x: {
           type: "number",
@@ -893,7 +1511,9 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
           min: timeline.min,
           max: timeline.max,
           afterBuildTicks: (scale) => {
-            scale.ticks = timeline.months.map((month) => ({ value: month.day }));
+            scale.ticks = timeline.months
+              .filter((month) => month.day >= scale.min && month.day <= scale.max)
+              .map((month) => ({ value: month.day }));
           },
           border: { display: false },
           grid: {
@@ -913,6 +1533,7 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
         },
         y: {
           beginAtZero: false,
+          ...(lockedYAxisBounds || {}),
           border: { display: false },
           grid: { color: "rgba(218, 230, 224, 0.065)" },
           ticks: {
@@ -926,6 +1547,539 @@ function lineChartConfig(timeline, datasets, { legendClickMode = "default", lege
       },
     },
   };
+
+  if (snapshotNavigation) {
+    applySnapshotNavigation(config, { pointDatasetLabel: snapshotPointDatasetLabel });
+  }
+  if (zoomPan) {
+    applyLineZoomPan(config, { fullMin: timeline.min, fullMax: timeline.max });
+  }
+
+  return config;
+}
+
+function applySnapshotNavigation(config, { scaleMode = "linear", pointDatasetLabel = "" } = {}) {
+  config.plugins = [...(config.plugins || []), snapshotScrubberPlugin, snapshotCursorPlugin];
+  config.options.plugins.snapshotCursor = { enabled: true, scaleMode, pointDatasetLabel };
+  config.options.plugins.snapshotScrubber = { enabled: true, scaleMode };
+  config.options.layout = {
+    ...(config.options.layout || {}),
+    padding: { ...(config.options.layout?.padding || {}), top: 30 },
+  };
+  config.options.onClick = (event, _elements, chart) => {
+    if (!chartEventInsideChartArea(chart, event)) {
+      return;
+    }
+    const date = snapshotDateForPixel(chart, Number(event.x), scaleMode);
+    if (date) {
+      selectDashboardSnapshot(date);
+    }
+  };
+  config.options.onHover = (event, _elements, chart) => {
+    if (chart.$snapshotScrubber?.active || chart.$lineZoomPan?.active) {
+      return;
+    }
+    const canPanAxis = lineZoomIsActive(chart) && chartEventInsideXAxis(chart, event);
+    chart.canvas.style.cursor = canPanAxis || chartEventInsideChartArea(chart, event) ? "grab" : "default";
+  };
+  return config;
+}
+
+function applyLineZoomPan(config, { fullMin, fullMax }) {
+  config.plugins = [...(config.plugins || []), lineZoomPanPlugin];
+  config.options.plugins.lineZoomPan = { enabled: true, fullMin, fullMax };
+  return config;
+}
+
+function chartEventInsideChartArea(chart, event) {
+  const pointerX = Number(event.x);
+  const pointerY = Number(event.y);
+  if (!Number.isFinite(pointerX) || !Number.isFinite(pointerY)) {
+    return false;
+  }
+
+  const { chartArea } = chart;
+  return Boolean(
+    chartArea &&
+      pointerX >= chartArea.left &&
+      pointerX <= chartArea.right &&
+      pointerY >= chartArea.top &&
+      pointerY <= chartArea.bottom
+  );
+}
+
+function chartEventInsideXAxis(chart, event) {
+  const pointerX = Number(event.x);
+  const pointerY = Number(event.y);
+  return pointInsideXAxis(chart, { x: pointerX, y: pointerY });
+}
+
+const lineZoomPanPlugin = {
+  id: "lineZoomPan",
+  afterInit(chart, _args, options) {
+    if (!options?.enabled) {
+      return;
+    }
+
+    const fullMin = Number(options.fullMin);
+    const fullMax = Number(options.fullMax);
+    if (!Number.isFinite(fullMin) || !Number.isFinite(fullMax) || fullMax <= fullMin) {
+      return;
+    }
+
+    const zoom = {
+      active: false,
+      fullMin,
+      fullMax,
+      pointerId: null,
+      startX: 0,
+      startMin: fullMin,
+      startMax: fullMax,
+    };
+
+    const handleWheel = (event) => {
+      const point = chartPointerPosition(chart, event);
+      if (!pointInsideZoomSurface(chart, point) || !chart.scales.x || !event.deltaY) {
+        return;
+      }
+
+      event.preventDefault();
+      const currentMin = Number(chart.scales.x.min);
+      const currentMax = Number(chart.scales.x.max);
+      const currentSpan = currentMax - currentMin;
+      const fullSpan = zoom.fullMax - zoom.fullMin;
+      if (!Number.isFinite(currentSpan) || currentSpan <= 0) {
+        return;
+      }
+
+      const deltaUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? chart.height : 1;
+      const zoomFactor = Math.min(Math.max(Math.exp(event.deltaY * deltaUnit * LINE_ZOOM_WHEEL_SPEED), 0.72), 1.38);
+      const minimumSpan = Math.min(fullSpan, Math.max(LINE_ZOOM_MIN_WINDOW_DAYS, fullSpan / 48));
+      const nextSpan = Math.min(fullSpan, Math.max(minimumSpan, currentSpan * zoomFactor));
+      const anchor = Number(chart.scales.x.getValueForPixel(point.x));
+      const anchorRatio = Number.isFinite(anchor) ? (anchor - currentMin) / currentSpan : 0.5;
+      const nextMin = (Number.isFinite(anchor) ? anchor : (currentMin + currentMax) / 2) - nextSpan * anchorRatio;
+      setLineZoomWindow(chart, zoom, nextMin, nextMin + nextSpan);
+    };
+
+    const handlePointerDown = (event) => {
+      if ((event.pointerType === "mouse" && event.button !== 0) || !lineZoomIsActive(chart)) {
+        return;
+      }
+      const point = chartPointerPosition(chart, event);
+      if (!pointInsideXAxis(chart, point)) {
+        return;
+      }
+
+      zoom.active = true;
+      zoom.pointerId = event.pointerId;
+      zoom.startX = point.x;
+      zoom.startMin = Number(chart.scales.x.min);
+      zoom.startMax = Number(chart.scales.x.max);
+      chart.canvas.style.cursor = "grabbing";
+      chart.canvas.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    };
+
+    const handlePointerMove = (event) => {
+      if (!zoom.active || event.pointerId !== zoom.pointerId) {
+        return;
+      }
+      const point = chartPointerPosition(chart, event);
+      const plotWidth = Math.max(chart.chartArea?.right - chart.chartArea?.left, 1);
+      const span = zoom.startMax - zoom.startMin;
+      const shift = -((point.x - zoom.startX) / plotWidth) * span;
+      setLineZoomWindow(chart, zoom, zoom.startMin + shift, zoom.startMax + shift);
+      event.preventDefault();
+    };
+
+    const finishPan = (event) => {
+      if (!zoom.active || event.pointerId !== zoom.pointerId) {
+        return;
+      }
+      zoom.active = false;
+      zoom.pointerId = null;
+      if (chart.canvas.hasPointerCapture?.(event.pointerId)) {
+        chart.canvas.releasePointerCapture(event.pointerId);
+      }
+      const point = chartPointerPosition(chart, event);
+      chart.canvas.style.cursor = lineZoomIsActive(chart) && pointInsideXAxis(chart, point) ? "grab" : "default";
+      event.preventDefault();
+    };
+
+    zoom.handlers = { handleWheel, handlePointerDown, handlePointerMove, finishPan };
+    chart.$lineZoomPan = zoom;
+    chart.canvas.addEventListener("wheel", handleWheel, { passive: false });
+    chart.canvas.addEventListener("pointerdown", handlePointerDown);
+    chart.canvas.addEventListener("pointermove", handlePointerMove);
+    chart.canvas.addEventListener("pointerup", finishPan);
+    chart.canvas.addEventListener("pointercancel", finishPan);
+  },
+  beforeUpdate(chart, _args, options) {
+    if (!options?.enabled || !chart.$lineZoomPan) {
+      return;
+    }
+    const min = Number(chart.options.scales.x.min ?? chart.$lineZoomPan.fullMin);
+    const max = Number(chart.options.scales.x.max ?? chart.$lineZoomPan.fullMax);
+    const bounds = visibleLineYAxisBounds(chart, min, max);
+    if (bounds) {
+      chart.options.scales.y.min = bounds.min;
+      chart.options.scales.y.max = bounds.max;
+    }
+  },
+  beforeDestroy(chart) {
+    const zoom = chart.$lineZoomPan;
+    if (!zoom) {
+      return;
+    }
+    chart.canvas.removeEventListener("wheel", zoom.handlers.handleWheel);
+    chart.canvas.removeEventListener("pointerdown", zoom.handlers.handlePointerDown);
+    chart.canvas.removeEventListener("pointermove", zoom.handlers.handlePointerMove);
+    chart.canvas.removeEventListener("pointerup", zoom.handlers.finishPan);
+    chart.canvas.removeEventListener("pointercancel", zoom.handlers.finishPan);
+    delete chart.$lineZoomPan;
+  },
+};
+
+function setLineZoomWindow(chart, zoom, rawMin, rawMax) {
+  const fullSpan = zoom.fullMax - zoom.fullMin;
+  let span = Math.min(Math.max(rawMax - rawMin, 1), fullSpan);
+  let min = rawMin;
+  if (span >= fullSpan - 0.5) {
+    min = zoom.fullMin;
+    span = fullSpan;
+  } else {
+    min = Math.min(Math.max(min, zoom.fullMin), zoom.fullMax - span);
+  }
+  chart.options.scales.x.min = min;
+  chart.options.scales.x.max = min + span;
+  chart.update("none");
+}
+
+function lineZoomIsActive(chart) {
+  const zoom = chart.$lineZoomPan;
+  if (!zoom || !chart.scales.x) {
+    return false;
+  }
+  return Number(chart.scales.x.max) - Number(chart.scales.x.min) < zoom.fullMax - zoom.fullMin - 0.5;
+}
+
+function pointInsideZoomSurface(chart, point) {
+  const { chartArea } = chart;
+  const xScale = chart.scales.x;
+  return Boolean(
+    chartArea &&
+      xScale &&
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      point.x >= chartArea.left &&
+      point.x <= chartArea.right &&
+      point.y >= chartArea.top &&
+      point.y <= xScale.bottom
+  );
+}
+
+function pointInsideXAxis(chart, point) {
+  const { chartArea } = chart;
+  const xScale = chart.scales.x;
+  return Boolean(
+    chartArea &&
+      xScale &&
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      point.x >= chartArea.left &&
+      point.x <= chartArea.right &&
+      point.y >= xScale.top &&
+      point.y <= xScale.bottom
+  );
+}
+
+const snapshotScrubberPlugin = {
+  id: "snapshotScrubber",
+  afterInit(chart, _args, options) {
+    if (!options?.enabled) {
+      return;
+    }
+
+    const scrubber = {
+      active: false,
+      frame: 0,
+      pendingDate: "",
+      pointerId: null,
+    };
+
+    const selectPendingDate = () => {
+      scrubber.frame = 0;
+      if (scrubber.pendingDate) {
+        const date = scrubber.pendingDate;
+        scrubber.pendingDate = "";
+        selectDashboardSnapshot(date);
+      }
+    };
+
+    const queuePointerDate = (event) => {
+      scrubber.pendingDate = snapshotDateForPointer(chart, event, options.scaleMode);
+      if (scrubber.pendingDate && !scrubber.frame) {
+        scrubber.frame = requestAnimationFrame(selectPendingDate);
+      }
+    };
+
+    const handlePointerDown = (event) => {
+      if ((event.pointerType === "mouse" && event.button !== 0) || !pointerInsideChartArea(chart, event)) {
+        return;
+      }
+      scrubber.active = true;
+      scrubber.pointerId = event.pointerId;
+      chart.canvas.style.cursor = "grabbing";
+      chart.canvas.setPointerCapture?.(event.pointerId);
+      queuePointerDate(event);
+      event.preventDefault();
+    };
+
+    const handlePointerMove = (event) => {
+      if (!scrubber.active || event.pointerId !== scrubber.pointerId) {
+        return;
+      }
+      queuePointerDate(event);
+      event.preventDefault();
+    };
+
+    const finishScrub = (event) => {
+      if (!scrubber.active || event.pointerId !== scrubber.pointerId) {
+        return;
+      }
+      queuePointerDate(event);
+      cancelAnimationFrame(scrubber.frame);
+      scrubber.frame = 0;
+      selectPendingDate();
+      scrubber.active = false;
+      scrubber.pointerId = null;
+      chart.canvas.style.cursor = pointerInsideChartArea(chart, event) ? "grab" : "default";
+      if (chart.canvas.hasPointerCapture?.(event.pointerId)) {
+        chart.canvas.releasePointerCapture(event.pointerId);
+      }
+    };
+
+    scrubber.handlers = { handlePointerDown, handlePointerMove, finishScrub };
+    chart.$snapshotScrubber = scrubber;
+    chart.canvas.addEventListener("pointerdown", handlePointerDown);
+    chart.canvas.addEventListener("pointermove", handlePointerMove);
+    chart.canvas.addEventListener("pointerup", finishScrub);
+    chart.canvas.addEventListener("pointercancel", finishScrub);
+  },
+  beforeDestroy(chart) {
+    const scrubber = chart.$snapshotScrubber;
+    if (!scrubber) {
+      return;
+    }
+    cancelAnimationFrame(scrubber.frame);
+    chart.canvas.removeEventListener("pointerdown", scrubber.handlers.handlePointerDown);
+    chart.canvas.removeEventListener("pointermove", scrubber.handlers.handlePointerMove);
+    chart.canvas.removeEventListener("pointerup", scrubber.handlers.finishScrub);
+    chart.canvas.removeEventListener("pointercancel", scrubber.handlers.finishScrub);
+    delete chart.$snapshotScrubber;
+  },
+};
+
+function pointerInsideChartArea(chart, event) {
+  const point = chartPointerPosition(chart, event);
+  const { chartArea } = chart;
+  return Boolean(
+    chartArea &&
+      point.x >= chartArea.left &&
+      point.x <= chartArea.right &&
+      point.y >= chartArea.top &&
+      point.y <= chartArea.bottom
+  );
+}
+
+function snapshotDateForPointer(chart, event, scaleMode = "linear") {
+  if (!state.dates.length || !chart.chartArea) {
+    return "";
+  }
+  const point = chartPointerPosition(chart, event);
+  return snapshotDateForPixel(chart, point.x, scaleMode);
+}
+
+function snapshotDateForPixel(chart, pointerX, scaleMode = "linear") {
+  if (!state.dates.length || !chart.chartArea || !Number.isFinite(pointerX)) {
+    return "";
+  }
+  const pixelX = Math.min(Math.max(pointerX, chart.chartArea.left), chart.chartArea.right);
+  let targetDay = Number(chart.scales.x.getValueForPixel(pixelX));
+  if (scaleMode === "category") {
+    const labels = chart.data.labels || [];
+    const index = Math.min(Math.max(Math.round(targetDay), 0), Math.max(labels.length - 1, 0));
+    targetDay = dateToDay(labels[index]);
+  }
+  if (!Number.isFinite(targetDay)) {
+    return "";
+  }
+  return state.dates.reduce((nearestDate, date) =>
+    Math.abs(dateToDay(date) - targetDay) < Math.abs(dateToDay(nearestDate) - targetDay) ? date : nearestDate
+  );
+}
+
+function chartPointerPosition(chart, event) {
+  const bounds = chart.canvas.getBoundingClientRect();
+  return {
+    x: ((event.clientX - bounds.left) / bounds.width) * chart.width,
+    y: ((event.clientY - bounds.top) / bounds.height) * chart.height,
+  };
+}
+
+const snapshotCursorPlugin = {
+  id: "snapshotCursor",
+  afterDatasetsDraw(chart, _args, options) {
+    if (!options?.enabled || !state.viewDate) {
+      return;
+    }
+
+    const position = snapshotCursorPosition(chart, options);
+    if (!position) {
+      return;
+    }
+
+    const { ctx, chartArea } = chart;
+    const { x: pointX, y: pointY, datasetIndex } = position;
+    const label = formatDateLabel(state.viewDate);
+    ctx.save();
+    ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = "rgba(183, 237, 120, 0.38)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pointX, chartArea.top);
+    ctx.lineTo(pointX, chartArea.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (datasetIndex >= 0 && Number.isFinite(pointY) && chart.isDatasetVisible(datasetIndex)) {
+      ctx.fillStyle = "#b7ed78";
+      ctx.strokeStyle = "#11151c";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(pointX, pointY, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.font = "700 10px Inter, ui-sans-serif, system-ui, sans-serif";
+    const labelWidth = Math.ceil(ctx.measureText(label).width) + 16;
+    const labelHeight = 24;
+    const labelX = Math.min(Math.max(pointX - labelWidth / 2, chartArea.left), chartArea.right - labelWidth);
+    const labelY = chartArea.top - labelHeight - 4;
+    ctx.fillStyle = "rgba(15, 20, 20, 0.96)";
+    ctx.strokeStyle = "rgba(183, 237, 120, 0.58)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(labelX, labelY, labelWidth, labelHeight, 7);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#d2ff9d";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, labelX + labelWidth / 2, labelY + labelHeight / 2);
+    ctx.restore();
+  },
+};
+
+function snapshotCursorPosition(chart, options) {
+  const { chartArea } = chart;
+  if (!chartArea) {
+    return null;
+  }
+
+  if (options.scaleMode === "category") {
+    const labels = chart.data.labels || [];
+    if (!labels.length) {
+      return null;
+    }
+    const targetDay = dateToDay(state.viewDate);
+    const index = labels.reduce((nearestIndex, label, labelIndex) =>
+      Math.abs(dateToDay(label) - targetDay) < Math.abs(dateToDay(labels[nearestIndex]) - targetDay)
+        ? labelIndex
+        : nearestIndex
+    , 0);
+    const x = chart.scales.x.getPixelForValue(index);
+    return Number.isFinite(x) && x >= chartArea.left && x <= chartArea.right
+      ? { x, y: null, datasetIndex: -1 }
+      : null;
+  }
+
+  const datasetIndex = options.pointDatasetLabel
+    ? chart.data.datasets.findIndex((dataset) => dataset.label === options.pointDatasetLabel)
+    : -1;
+  const dataset = chart.data.datasets[datasetIndex];
+  const selectedPoint = dataset?.data?.find((point) => point.date === state.viewDate);
+  const xValue = selectedPoint?.x ?? dateToDay(state.viewDate);
+  const x = chart.scales.x.getPixelForValue(xValue);
+  if (!Number.isFinite(x) || x < chartArea.left || x > chartArea.right) {
+    return null;
+  }
+  return {
+    x,
+    y: selectedPoint ? chart.scales.y.getPixelForValue(selectedPoint.y) : null,
+    datasetIndex: selectedPoint ? datasetIndex : -1,
+  };
+}
+
+function lineChartYAxisBounds(datasets) {
+  const values = datasets.flatMap((dataset) => dataset.data || []).map((point) => Number(point?.y)).filter(Number.isFinite);
+  return lineYAxisBoundsFromValues(values);
+}
+
+function visibleLineYAxisBounds(chart, minX, maxX) {
+  const values = [];
+  chart.data.datasets.forEach((dataset, datasetIndex) => {
+    if (!chart.isDatasetVisible(datasetIndex)) {
+      return;
+    }
+    const points = (dataset.data || []).filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.y)));
+    points.forEach((point) => {
+      if (point.x >= minX && point.x <= maxX) {
+        values.push(Number(point.y));
+      }
+    });
+    [minX, maxX].forEach((boundary) => {
+      const value = interpolatedLineValue(points, boundary);
+      if (Number.isFinite(value)) {
+        values.push(value);
+      }
+    });
+  });
+  return lineYAxisBoundsFromValues(values);
+}
+
+function interpolatedLineValue(points, targetX) {
+  if (!points.length || targetX < points[0].x || targetX > points.at(-1).x) {
+    return null;
+  }
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    if (current.x === targetX || index === 0 && current.x > targetX) {
+      return Number(current.y);
+    }
+    if (current.x > targetX) {
+      const previous = points[index - 1];
+      const width = current.x - previous.x;
+      const ratio = width ? (targetX - previous.x) / width : 0;
+      return Number(previous.y) + (Number(current.y) - Number(previous.y)) * ratio;
+    }
+  }
+  return Number(points.at(-1).y);
+}
+
+function lineYAxisBoundsFromValues(values) {
+  if (!values.length) {
+    return null;
+  }
+
+  const dataMin = Math.min(...values);
+  const dataMax = Math.max(...values);
+  const span = Math.max(dataMax - dataMin, Math.abs(dataMax) * 0.08, 1);
+  const padding = span * 0.08;
+  const min = dataMin >= 0 ? Math.max(0, dataMin - padding) : dataMin - padding;
+  return { min, max: dataMax + padding };
 }
 
 function lineYAxisBaseline(context) {
@@ -955,12 +2109,20 @@ function linePointAnimationDelay(context) {
   return Math.min(pointIndex * LINE_POINT_STAGGER_MS, LINE_POINT_MAX_DELAY_MS);
 }
 
-function buildLineDataset(label, points, color, { areaFill = false, borderWidth = LINE_BASE_BORDER_WIDTH } = {}) {
+function buildLineDataset(label, points, color, {
+  areaFill = false,
+  borderWidth = LINE_BASE_BORDER_WIDTH,
+  pointRadius = window.innerWidth < 720 ? 2 : 2.5,
+  pointHoverRadius = 5,
+  pointHitRadius = 8,
+} = {}) {
   return {
     label,
     data: points.map((point) => ({ x: dateToDay(point.date), y: point.value, date: point.date })),
     baseColor: color,
     baseBorderWidth: borderWidth,
+    basePointRadius: pointRadius,
+    basePointHoverRadius: pointHoverRadius,
     borderColor: color,
     backgroundColor: areaFill ? lineAreaGradient(color) : color,
     borderWidth,
@@ -971,9 +2133,9 @@ function buildLineDataset(label, points, color, { areaFill = false, borderWidth 
     fill: areaFill ? "start" : false,
     tension: 0.42,
     spanGaps: true,
-    pointRadius: window.innerWidth < 720 ? 2 : 2.5,
-    pointHoverRadius: 5,
-    pointHitRadius: 8,
+    pointRadius,
+    pointHoverRadius,
+    pointHitRadius,
   };
 }
 
@@ -1014,20 +2176,30 @@ function hideThenIsolateLegendClick(_event, legendItem, legend) {
   chart.update("none");
 }
 
+function visibilityOnlyLegendClick(_event, legendItem, legend) {
+  const chart = legend.chart;
+  const datasetIndex = legendItem.datasetIndex;
+  chart.setDatasetVisibility(datasetIndex, !chart.isDatasetVisible(datasetIndex));
+  chart.update("none");
+}
+
 function semiIsolateLineLegendHover(_event, legendItem, legend) {
   const chart = legend.chart;
   const hoveredIndex = legendItem.datasetIndex;
 
   chart.data.datasets.forEach((dataset, index) => {
     const baseColor = dataset.baseColor || dataset.borderColor;
+    const preservesPointFiltering = Boolean(dataset.preservePointFiltering);
+    const basePointRadius = dataset.basePointRadius ?? 3;
+    const basePointHoverRadius = dataset.basePointHoverRadius ?? 6;
     if (index === hoveredIndex) {
       dataset.borderColor = baseColor;
       dataset.backgroundColor = baseColor;
       dataset.pointBackgroundColor = baseColor;
       dataset.pointBorderColor = baseColor;
       dataset.borderWidth = LINE_HOVER_BORDER_WIDTH;
-      dataset.pointRadius = 4;
-      dataset.pointHoverRadius = 7;
+      dataset.pointRadius = preservesPointFiltering ? basePointRadius : Math.max(Number(basePointRadius), 3.5);
+      dataset.pointHoverRadius = preservesPointFiltering ? basePointHoverRadius : Math.max(Number(basePointHoverRadius), 6);
       return;
     }
 
@@ -1036,18 +2208,21 @@ function semiIsolateLineLegendHover(_event, legendItem, legend) {
     dataset.pointBackgroundColor = colorWithAlpha(baseColor, 0.18);
     dataset.pointBorderColor = colorWithAlpha(baseColor, 0.18);
     dataset.borderWidth = LINE_DIM_BORDER_WIDTH;
-    dataset.pointRadius = 1.5;
-    dataset.pointHoverRadius = 4;
+    dataset.pointRadius = preservesPointFiltering ? basePointRadius : Math.min(Number(basePointRadius), 1);
+    dataset.pointHoverRadius = preservesPointFiltering ? basePointHoverRadius : Math.min(Number(basePointHoverRadius), 4);
   });
 
   chart.update("none");
   chart.data.datasets.forEach((dataset, index) => {
     const baseColor = dataset.baseColor || dataset.borderColor;
     const pointColor = index === hoveredIndex ? baseColor : colorWithAlpha(baseColor, 0.18);
+    const preservesPointFiltering = Boolean(dataset.preservePointFiltering);
+    const basePointRadius = Number(dataset.basePointRadius ?? 3);
+    const basePointHoverRadius = Number(dataset.basePointHoverRadius ?? 6);
     applyLinePointElementStyle(chart, index, {
       color: pointColor,
-      radius: index === hoveredIndex ? 4 : 1.5,
-      hoverRadius: index === hoveredIndex ? 7 : 4,
+      radius: preservesPointFiltering ? null : (index === hoveredIndex ? Math.max(basePointRadius, 3.5) : Math.min(basePointRadius, 1)),
+      hoverRadius: preservesPointFiltering ? null : (index === hoveredIndex ? Math.max(basePointHoverRadius, 6) : Math.min(basePointHoverRadius, 4)),
       borderWidth: index === hoveredIndex ? LINE_POINT_BORDER_WIDTH : 1,
     });
   });
@@ -1059,21 +2234,26 @@ function semiIsolateLineLegendLeave(_event, _legendItem, legend) {
   chart.data.datasets.forEach((dataset) => {
     const baseColor = dataset.baseColor || dataset.borderColor;
     const baseBorderWidth = dataset.baseBorderWidth || LINE_BASE_BORDER_WIDTH;
+    const basePointRadius = dataset.basePointRadius ?? 3;
+    const basePointHoverRadius = dataset.basePointHoverRadius ?? 6;
     dataset.borderColor = baseColor;
     dataset.backgroundColor = baseColor;
     dataset.pointBackgroundColor = baseColor;
     dataset.pointBorderColor = baseColor;
     dataset.borderWidth = baseBorderWidth;
-    dataset.pointRadius = 3;
-    dataset.pointHoverRadius = 6;
+    dataset.pointRadius = basePointRadius;
+    dataset.pointHoverRadius = basePointHoverRadius;
   });
   chart.update("none");
   chart.data.datasets.forEach((dataset, index) => {
     const baseColor = dataset.baseColor || dataset.borderColor;
+    const preservesPointFiltering = Boolean(dataset.preservePointFiltering);
+    const basePointRadius = Number(dataset.basePointRadius ?? 3);
+    const basePointHoverRadius = Number(dataset.basePointHoverRadius ?? 6);
     applyLinePointElementStyle(chart, index, {
       color: baseColor,
-      radius: 3,
-      hoverRadius: 6,
+      radius: preservesPointFiltering ? null : basePointRadius,
+      hoverRadius: preservesPointFiltering ? null : basePointHoverRadius,
       borderWidth: LINE_POINT_BORDER_WIDTH,
     });
   });
@@ -1087,8 +2267,12 @@ function applyLinePointElementStyle(chart, datasetIndex, { color, radius, hoverR
     }
     point.options.backgroundColor = color;
     point.options.borderColor = color;
-    point.options.radius = radius;
-    point.options.hoverRadius = hoverRadius;
+    if (Number.isFinite(radius)) {
+      point.options.radius = radius;
+    }
+    if (Number.isFinite(hoverRadius)) {
+      point.options.hoverRadius = hoverRadius;
+    }
     point.options.borderWidth = borderWidth;
   });
 }
@@ -1134,7 +2318,7 @@ function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
   byId("metricPlanDelta").classList.toggle("is-negative", planDelta < 0);
   renderPlanAllocationDeltas(grouped, total, latestRows, currentTotal);
 
-  replaceChart("planChart", {
+  updateDoughnutChart("planChart", {
     type: "doughnut",
     data: {
       labels,
@@ -1145,6 +2329,7 @@ function renderPlanWorkspace({ doughnutAnimation = "scale" } = {}) {
           borderColor: labels.map((label) => borderFor(colorFor("asset", label, 0))),
           borderWidth: 1.5,
           hoverOffset: 8,
+          doughnutKeys: labels,
         },
       ],
     },
@@ -1260,6 +2445,83 @@ function replaceChart(chartId, config) {
   renderExternalDoughnutLegend(state.charts[chartId]);
 }
 
+function updateDoughnutChart(chartId, config) {
+  const chart = state.charts[chartId];
+  const incomingDataset = config.data.datasets[0];
+  const incomingKeys = incomingDataset.doughnutKeys || config.data.labels;
+
+  if (!chart || chart.config.type !== "doughnut") {
+    replaceChart(chartId, config);
+    state.charts[chartId].$doughnutKeys = [...incomingKeys];
+    return;
+  }
+
+  const currentDataset = chart.data.datasets[0];
+  const currentKeys = chart.$doughnutKeys || chart.data.labels;
+  const currentIndexByKey = new Map(currentKeys.map((key, index) => [key, index]));
+  const incomingIndexByKey = new Map(incomingKeys.map((key, index) => [key, index]));
+  const mergedKeys = [...currentKeys, ...incomingKeys.filter((key) => !currentIndexByKey.has(key))];
+  const keyedProperties = ["data", "backgroundColor", "borderColor", "assetDistributionRecords"];
+  const previousLabels = [...chart.data.labels];
+  const incomingLabels = config.data.labels;
+
+  chart.$legendHoverRecord = null;
+  chart.setActiveElements([]);
+  chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
+  chart.$doughnutKeys = mergedKeys;
+  chart.data.labels = mergedKeys.map((key) => {
+    const incomingIndex = incomingIndexByKey.get(key);
+    return incomingIndex === undefined ? previousLabels[currentIndexByKey.get(key)] : incomingLabels[incomingIndex];
+  });
+
+  Object.entries(incomingDataset).forEach(([property, value]) => {
+    if (!keyedProperties.includes(property) && property !== "doughnutKeys") {
+      currentDataset[property] = value;
+    }
+  });
+
+  if (mergedKeys.length > currentKeys.length) {
+    keyedProperties.forEach((property) => {
+      if (!incomingDataset[property] && !currentDataset[property]) {
+        return;
+      }
+      const currentValues = currentDataset[property] || [];
+      currentDataset[property] = mergedKeys.map((key) => {
+        const currentIndex = currentIndexByKey.get(key);
+        if (currentIndex !== undefined) {
+          return currentValues[currentIndex];
+        }
+        if (property === "data") {
+          return 0;
+        }
+        return incomingDataset[property]?.[incomingIndexByKey.get(key)];
+      });
+    });
+    chart.update("none");
+  }
+
+  keyedProperties.forEach((property) => {
+    if (!incomingDataset[property] && !currentDataset[property]) {
+      return;
+    }
+    const currentValues = currentDataset[property] || [];
+    currentDataset[property] = mergedKeys.map((key, mergedIndex) => {
+      const incomingIndex = incomingIndexByKey.get(key);
+      if (incomingIndex !== undefined) {
+        return incomingDataset[property]?.[incomingIndex];
+      }
+      return property === "data" ? 0 : currentValues[mergedIndex];
+    });
+  });
+
+  chart.options.cutout = config.options.cutout;
+  chart.options.animation = doughnutAnimationOptions("morph");
+  chart.options.plugins.legend.labels.generateLabels = config.options.plugins.legend.labels.generateLabels;
+  chart.options.plugins.tooltip.callbacks = config.options.plugins.tooltip.callbacks;
+  chart.update();
+  renderExternalDoughnutLegend(chart);
+}
+
 function doughnutOptions(total, animationMode = "scale", { cutout = "66%", legendLabels, tooltipCallbacks } = {}) {
   return {
     responsive: true,
@@ -1321,7 +2583,13 @@ function renderExternalDoughnutLegend(chart) {
     chart.options.plugins.legend.labels.generateLabels ||
     chart.config._config.options.plugins.legend.labels.generateLabels ||
     Chart.defaults.plugins.legend.labels.generateLabels;
-  const items = generateLabels(chart);
+  const items = generateLabels(chart).filter((item) => {
+    if (item.assetDistributionRecord) {
+      return true;
+    }
+    const datasetIndex = Number.isInteger(item.datasetIndex) ? item.datasetIndex : 0;
+    return Number(chart.data.datasets[datasetIndex]?.data?.[item.index] || 0) > 0;
+  });
   legend.innerHTML = "";
 
   items.forEach((item) => {
@@ -1394,6 +2662,15 @@ function doughnutAnimationOptions(animationMode) {
       animateRotate: true,
       animateScale: false,
       duration: DOUGHNUT_ROTATE_ANIMATION_DURATION,
+      easing: "easeOutCubic",
+    };
+  }
+
+  if (animationMode === "morph") {
+    return {
+      animateRotate: false,
+      animateScale: false,
+      duration: DOUGHNUT_SCALE_ANIMATION_DURATION,
       easing: "easeOutCubic",
     };
   }
@@ -1506,6 +2783,26 @@ function normalizeInvestmentReturnsCsv(text) {
     throw new Error("investment return CSV has no usable rows");
   }
   return rows;
+}
+
+function normalizeAnalysisReports(text) {
+  const parsed = JSON.parse(text);
+  const reports = Array.isArray(parsed?.reports) ? parsed.reports : [];
+  const normalized = reports
+    .filter((report) => report && typeof report === "object")
+    .map((report) => ({
+      ...report,
+      id: normalizeText(report.id),
+      publishedAt: parseDate(report.publishedAt),
+      asOf: parseDate(report.asOf),
+      title: normalizeText(report.title),
+    }))
+    .filter((report) => report.id && report.publishedAt && report.asOf && report.title)
+    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  if (!normalized.length) {
+    throw new Error("analysis report JSON has no usable reports");
+  }
+  return normalized;
 }
 
 function normalizeAssetType(row, ticker, majorityAssetTypes, isBalanceCash) {
@@ -1706,6 +3003,7 @@ function buildTimeline(dates) {
     months.push({
       day: timeToDay(time),
       label: date.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+      year: date.getUTCFullYear(),
     });
   }
 
@@ -1718,7 +3016,18 @@ function buildTimeline(dates) {
 
 function monthLabelForDay(timeline, value) {
   const month = timeline.months.find((entry) => entry.day === Number(value));
-  return month?.label || "";
+  return month ? [month.label, String(month.year)] : "";
+}
+
+function monthYearAxisLabel(isoDate) {
+  if (!isoDate) {
+    return "";
+  }
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  return [
+    date.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+    String(date.getUTCFullYear()),
+  ];
 }
 
 function dateToDay(isoDate) {
@@ -1750,7 +3059,17 @@ function sumRows(rows) {
 
 function colorFor(kind, label, index) {
   const map = COLOR_MAPS[kind];
-  return map?.get(label) || FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+  const mappedColor = map?.get(label);
+  if (mappedColor) {
+    return mappedColor;
+  }
+
+  const stableKey = `${kind}:${normalizeText(label)}`;
+  let hash = 0;
+  for (const character of stableKey) {
+    hash = (Math.imul(hash, 31) + character.codePointAt(0)) | 0;
+  }
+  return FALLBACK_COLORS[(hash >>> 0) % FALLBACK_COLORS.length] || FALLBACK_COLORS[index % FALLBACK_COLORS.length];
 }
 
 function borderFor(color) {
